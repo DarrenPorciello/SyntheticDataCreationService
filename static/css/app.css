@@ -40,6 +40,23 @@ body {
   line-height: 1.5;
 }
 
+.server-warning {
+  background: #fffbeb;
+  border-bottom: 1px solid #fcd34d;
+  color: #92400e;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.875rem;
+  text-align: center;
+  line-height: 1.45;
+}
+
+.server-warning code {
+  font-size: 0.8125rem;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
 .app-header {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -392,6 +409,11 @@ main {
   flex-shrink: 0;
 }
 
+.agent-banner-main {
+  flex: 1;
+  min-width: 0;
+}
+
 .agent-banner h3 {
   margin: 0 0 0.25rem;
   font-size: 0.9375rem;
@@ -402,6 +424,23 @@ main {
   margin: 0;
   font-size: 0.8125rem;
   color: var(--text-muted);
+}
+
+.agent-privacy-note {
+  margin: 0.5rem 0 0 !important;
+  font-size: 0.75rem !important;
+  color: var(--text-muted) !important;
+  max-width: 62ch;
+}
+
+#btn-retry-ai {
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  padding: 0.5rem 0.875rem;
+}
+
+.agent-banner.is-loading {
+  opacity: 0.92;
 }
 
 .issue-list {

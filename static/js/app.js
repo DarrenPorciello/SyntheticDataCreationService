@@ -21,6 +21,47 @@
 
   const els = {};
 
+  /** Set in initApiBase(): FastAPI origin, or explicit meta URL, or default 127.0.0.1:8765. */
+  let resolvedApiBase = "http://127.0.0.1:8765";
+
+  /**
+   * If this page is served by FastAPI, use same origin. Otherwise (Live Preview, http.server,
+   * file://) POST must go to a real API host — default http://127.0.0.1:8765 or meta api-base URL.
+   */
+  async function initApiBase() {
+    const meta = document.querySelector('meta[name="api-base"]');
+    const raw = meta ? meta.getAttribute("content") : "";
+    const trimmed = (raw || "").trim();
+    const explicitUrl = trimmed && trimmed !== "__AUTO__";
+    const proto = window.location.protocol || "";
+
+    if (proto === "http:" || proto === "https:") {
+      try {
+        const r = await fetch(`${window.location.origin}/api/health`, { method: "GET" });
+        if (r.ok) {
+          const j = await r.json().catch(() => null);
+          if (j && j.ok === true) {
+            resolvedApiBase = window.location.origin;
+            return;
+          }
+        }
+      } catch {
+        /* refused, etc. */
+      }
+    }
+
+    if (explicitUrl) {
+      resolvedApiBase = trimmed.replace(/\/$/, "");
+      return;
+    }
+
+    resolvedApiBase = "http://127.0.0.1:8765";
+  }
+
+  function apiBase() {
+    return resolvedApiBase;
+  }
+
   function $(id) {
     return document.getElementById(id);
   }
@@ -40,7 +81,10 @@
     els.viewUpload = $("view-upload");
     els.viewInspect = $("view-inspect");
     els.btnBackUpload = $("btn-back-upload");
+    els.agentBanner = $("agent-banner");
     els.agentSummary = $("agent-summary");
+    els.agentPrivacyNote = $("agent-privacy-note");
+    els.btnRetryAi = $("btn-retry-ai");
     els.issueList = $("issue-list");
     els.statsGrid = $("stats-grid");
     els.previewWrap = $("preview-wrap");
@@ -250,6 +294,42 @@
     return issues;
   }
 
+  function sevClass(sev) {
+    if (sev === "high" || sev === "medium" || sev === "low") return sev;
+    return "low";
+  }
+
+  function buildColumnStatsPayload(colStats) {
+    return colStats.map((c) => ({
+      name: c.name,
+      inferred: c.inferred,
+      nonNull: c.nonNull,
+      missing: c.missing,
+      unique: c.unique,
+    }));
+  }
+
+  function buildSampleRowsForApi(rows, headers, limit) {
+    return rows.slice(0, limit).map((r) => {
+      const o = {};
+      headers.forEach((h) => {
+        o[h] = String(r[h] ?? "");
+      });
+      return o;
+    });
+  }
+
+  function renderIssueList() {
+    els.issueList.innerHTML = state.issues
+      .map(
+        (i) => `<li class="issue-item">
+        <span class="issue-severity ${sevClass(i.sev)}">${escapeHtml(i.sev)}</span>
+        <div class="issue-body"><strong>${escapeHtml(i.title)}</strong><span>${escapeHtml(i.detail)}</span></div>
+      </li>`
+      )
+      .join("");
+  }
+
   function renderStepper() {
     els.stepper.innerHTML = STEPS.map((s, i) => {
       let cls = "stepper-item";
@@ -321,31 +401,14 @@
     renderUploadPreview();
   }
 
-  function renderInspect() {
-    const colStats = inferColumnStats(state.headers, state.rows);
-    state.issues = buildIssues(state.headers, state.rows, colStats);
-
+  function renderInspectStatic(colStats) {
     const nulls = colStats.reduce((a, c) => a + c.missing, 0);
-    els.agentSummary.textContent = state.issues.filter((i) => i.sev === "high").length
-      ? "The hygiene scan found high-severity items that may affect downstream synthetic data quality. Review issues below and apply fixes where appropriate."
-      : state.issues.filter((i) => i.sev === "medium").length
-        ? "Overall structure looks usable. Several medium-priority hygiene notes were detected — consider remediation before synthesis."
-        : "Data looks clean under automated checks. Verify clinical or operational meaning with domain experts before relying on synthetic outputs.";
-
-    els.issueList.innerHTML = state.issues
-      .map(
-        (i) => `<li class="issue-item">
-        <span class="issue-severity ${i.sev}">${i.sev}</span>
-        <div class="issue-body"><strong>${escapeHtml(i.title)}</strong><span>${escapeHtml(i.detail)}</span></div>
-      </li>`
-      )
-      .join("");
 
     els.statsGrid.innerHTML = `
       <div class="stat-card"><div class="stat-value">${state.rows.length.toLocaleString()}</div><div class="stat-label">Rows</div></div>
       <div class="stat-card"><div class="stat-value">${state.headers.length}</div><div class="stat-label">Columns</div></div>
       <div class="stat-card"><div class="stat-value">${nulls.toLocaleString()}</div><div class="stat-label">Empty cells</div></div>
-      <div class="stat-card"><div class="stat-value">${state.fileName}</div><div class="stat-label">File name</div></div>
+      <div class="stat-card"><div class="stat-value">${escapeHtml(state.fileName)}</div><div class="stat-label">File name</div></div>
     `;
 
     els.previewHead.innerHTML = `<tr>${state.headers.map((h) => `<th title="${escapeAttr(h)}">${escapeHtml(h)}</th>`).join("")}</tr>`;
@@ -374,6 +437,70 @@
       </tbody>`;
 
     renderCharts(colStats);
+  }
+
+  async function renderInspect() {
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const ruleIssues = buildIssues(state.headers, state.rows, colStats);
+    renderInspectStatic(colStats);
+
+    els.agentSummary.textContent =
+      "OpenAI is reviewing column profiles, deterministic checks, and a small row sample through the local API. This usually takes a few seconds.";
+    els.issueList.innerHTML = `<li class="issue-item"><span class="issue-severity low">…</span><div class="issue-body"><strong>In progress</strong><span>Running model assessment.</span></div></li>`;
+    if (els.btnRetryAi) els.btnRetryAi.classList.add("hidden");
+    if (els.agentPrivacyNote) els.agentPrivacyNote.classList.add("hidden");
+    if (els.agentBanner) els.agentBanner.classList.add("is-loading");
+
+    const payload = {
+      file_name: state.fileName,
+      row_count: state.rows.length,
+      headers: state.headers,
+      column_stats: buildColumnStatsPayload(colStats),
+      sample_rows: buildSampleRowsForApi(state.rows, state.headers, 25),
+      deterministic_findings: ruleIssues.map((i) => ({ sev: i.sev, title: i.title, detail: i.detail })),
+    };
+
+    try {
+      const res = await fetch(`${apiBase()}/api/quality-analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const raw = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        let msg = res.statusText;
+        if (typeof raw.detail === "string") msg = raw.detail;
+        else if (Array.isArray(raw.detail))
+          msg = raw.detail.map((d) => (d.msg != null ? d.msg : JSON.stringify(d))).join("; ");
+        throw new Error(msg || `Request failed (${res.status})`);
+      }
+      els.agentSummary.textContent = raw.summary || "Assessment complete.";
+      state.issues = (raw.issues || []).map((i) => ({
+        sev: sevClass(i.sev),
+        title: String(i.title || "Finding"),
+        detail: String(i.detail || ""),
+      }));
+      if (!state.issues.length) state.issues = ruleIssues;
+      renderIssueList();
+      if (els.agentPrivacyNote) els.agentPrivacyNote.classList.remove("hidden");
+      if (els.btnRetryAi) els.btnRetryAi.classList.add("hidden");
+    } catch (err) {
+      console.error(err);
+      const reason = err && err.message ? err.message : String(err);
+      toast(reason);
+      let hint =
+        " Showing rule-based checks only. Open the app at the same URL as FastAPI (run python server.py from the project folder).";
+      if (/unsupported method|501/i.test(reason)) {
+        hint =
+          " You are hitting Python's static file server (e.g. python -m http.server), which does not allow POST. Stop it and run python server.py instead, then reload this page from that address.";
+      }
+      els.agentSummary.textContent = `Could not reach the AI API (${reason}).${hint}`;
+      state.issues = ruleIssues;
+      renderIssueList();
+      if (els.btnRetryAi) els.btnRetryAi.classList.remove("hidden");
+    } finally {
+      if (els.agentBanner) els.agentBanner.classList.remove("is-loading");
+    }
   }
 
   function destroyCharts() {
@@ -608,6 +735,12 @@
 
     els.btnApplyFixes.addEventListener("click", applyFixes);
 
+    if (els.btnRetryAi) {
+      els.btnRetryAi.addEventListener("click", () => {
+        renderInspect();
+      });
+    }
+
     els.btnProceedSynthetic.addEventListener("click", () => toast("Synthetic data creation will be added in the next phase."));
 
     els.stepper.addEventListener("click", (e) => {
@@ -640,10 +773,44 @@
     renderUploadPreview();
   }
 
-  function boot() {
+  async function checkApiServer() {
+    const banner = $("server-warning");
+    if (!banner) return;
+    try {
+      const res = await fetch(`${apiBase()}/api/health`, { method: "GET" });
+      if (res.status === 404) {
+        banner.classList.remove("hidden");
+        banner.innerHTML =
+          "This address is serving <strong>static files only</strong> (for example <code>python -m http.server</code>). The AI API is not available here. Stop that process, run <code>python server.py</code> from the project folder, then open <code>http://127.0.0.1:8765</code> (or your <code>SERVER_PORT</code>).";
+        return;
+      }
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const keyLen = typeof data.openai_key_char_length === "number" ? data.openai_key_char_length : 0;
+      const noKey = data.openai_configured === false || keyLen === 0;
+      if (noKey) {
+        banner.classList.remove("hidden");
+        const exists = data.env_file_exists === true;
+        const hint = data.server_dir ? ` Server is running from: ${data.server_dir}.` : "";
+        const envPath = data.env_file_next_to_server_py || ".env next to server.py";
+        if (!exists) {
+          banner.textContent = `No .env file at ${envPath}.${hint} Create that file with a line OPENAI_API_KEY=sk-... (no spaces around =) and restart the server.`;
+        } else {
+          banner.textContent = `OPENAI_API_KEY is still empty.${hint} Common cause: another .env in your shell's current folder (cwd) had an empty OPENAI_API_KEY line and overwrote this file — that is fixed in the latest server.py; restart the server. Otherwise check for a typo in the variable name, or an invalid/revoked key (invalid keys still show as "configured" here but fail when calling OpenAI).`;
+        }
+      }
+    } catch {
+      banner.classList.remove("hidden");
+      banner.textContent = `Cannot reach the API at ${apiBase()}. In the project folder run: python server.py (then keep this tab open or reload).`;
+    }
+  }
+
+  async function boot() {
     initEls();
+    await initApiBase();
     bindEvents();
     renderStepper();
+    await checkApiServer();
     if (tryLoadSession() && state.rows.length) {
       const Papa = window.Papa;
       if (!state.rawText && state.headers.length) {
@@ -657,6 +824,6 @@
     }
   }
 
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
-  else boot();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => void boot());
+  else void boot();
 })();

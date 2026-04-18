@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- __AUTO__ = API on same host as this page when it is FastAPI. If you use Live Preview / http.server, set an explicit API URL, e.g. http://127.0.0.1:8765 -->
+    <meta name="api-base" content="__AUTO__" />
     <title>Synthetic Data Studio — Southlake workflow</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -15,6 +17,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   </head>
   <body>
+    <div id="server-warning" class="server-warning hidden" role="alert"></div>
     <header class="app-header">
       <div class="app-header-inner">
         <div class="brand">
@@ -76,18 +79,23 @@
         <div class="panel">
           <h2 class="panel-title" id="inspect-heading">Data inspection</h2>
           <p class="panel-lead">
-            Automated hygiene screening, structural summary, and quick charts. Use optional fixes to improve how the
-            data will be described before synthetic generation.
+            Structural summary, charts, and optional fixes — plus an OpenAI-powered hygiene pass when you run the local
+            API server (your key stays on the server).
           </p>
 
-          <div class="agent-banner">
+          <div class="agent-banner" id="agent-banner">
             <div class="agent-avatar" aria-hidden="true">AI</div>
-            <div>
+            <div class="agent-banner-main">
               <h3>Data quality agent</h3>
               <p id="agent-summary">
-                Run checks on your uploaded file. The agent applies transparent, rule-based tests suitable for a first
-                pass — pair with domain expertise for clinical datasets.
+                After upload, the inspection step sends column statistics, deterministic checks, and a small row sample
+                to OpenAI through this app’s backend for a written assessment.
               </p>
+              <p id="agent-privacy-note" class="agent-privacy-note hidden">
+                A limited row sample is transmitted to the model via your machine’s API process only — not with the key
+                in the browser. Avoid uploading regulated patient data unless your environment is approved for it.
+              </p>
+              <button type="button" class="btn btn-secondary hidden" id="btn-retry-ai">Re-run AI assessment</button>
             </div>
           </div>
 
