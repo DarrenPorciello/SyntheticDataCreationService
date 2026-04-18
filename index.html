@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Synthetic Data Studio — Southlake workflow</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="static/css/app.css" />
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-header-inner">
+        <div class="brand">
+          <div>
+            <h1 class="brand-title">Synthetic Data Studio</h1>
+            <p class="brand-sub">Agent-assisted CSV intake, hygiene review, and (next) synthetic generation</p>
+          </div>
+        </div>
+        <nav aria-label="Workflow progress">
+          <ol class="stepper" id="stepper"></ol>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section id="view-upload" class="view-upload" aria-labelledby="upload-heading">
+        <div class="panel">
+          <h2 class="panel-title" id="upload-heading">Upload data set</h2>
+          <p class="panel-lead">
+            Upload a comma-separated file. Your file is kept in this browser session for inspection and later
+            synthetic-data steps — nothing is sent to a server in this prototype.
+          </p>
+          <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Upload CSV file">
+            <div class="dropzone-icon" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            </div>
+            <h2>Drag &amp; drop your CSV here</h2>
+            <p>or click to browse · UTF-8 recommended</p>
+            <input id="file-input" type="file" accept=".csv,text/csv" />
+          </div>
+          <div class="file-meta" id="file-meta" aria-live="polite">
+            <div class="file-meta-row">
+              <span><strong>File:</strong> <span id="file-name">—</span></span>
+              <span><strong>Shape:</strong> <span id="file-stats">—</span></span>
+            </div>
+            <div class="upload-preview" id="upload-preview" hidden>
+              <h3 class="upload-preview-title">Data preview</h3>
+              <p class="upload-preview-lead">First five rows from your file.</p>
+              <div class="table-wrap upload-preview-table">
+                <table class="data-table">
+                  <thead id="upload-preview-head"></thead>
+                  <tbody id="upload-preview-body"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="actions">
+              <button type="button" class="btn btn-primary" id="btn-continue" disabled>Continue to inspection</button>
+              <button type="button" class="btn btn-ghost" id="btn-reupload">Clear &amp; upload new file</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-inspect" class="hidden" aria-labelledby="inspect-heading">
+        <div class="panel">
+          <h2 class="panel-title" id="inspect-heading">Data inspection</h2>
+          <p class="panel-lead">
+            Automated hygiene screening, structural summary, and quick charts. Use optional fixes to improve how the
+            data will be described before synthetic generation.
+          </p>
+
+          <div class="agent-banner">
+            <div class="agent-avatar" aria-hidden="true">AI</div>
+            <div>
+              <h3>Data quality agent</h3>
+              <p id="agent-summary">
+                Run checks on your uploaded file. The agent applies transparent, rule-based tests suitable for a first
+                pass — pair with domain expertise for clinical datasets.
+              </p>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div>
+              <h3 class="panel-title" style="font-size: 0.9375rem">Hygiene findings</h3>
+              <ul class="issue-list" id="issue-list"></ul>
+            </div>
+            <div>
+              <h3 class="panel-title" style="font-size: 0.9375rem">Dataset summary</h3>
+              <div class="stats-grid" id="stats-grid"></div>
+              <div class="fix-panel">
+                <h4>Optional corrections</h4>
+                <div class="fix-options">
+                  <label><input type="checkbox" id="fix-trim" checked /> Trim whitespace in headers and text cells</label>
+                  <label><input type="checkbox" id="fix-dedupe" /> Remove duplicate rows (all columns match)</label>
+                  <label><input type="checkbox" id="fix-drop-empty" /> Remove completely empty rows</label>
+                </div>
+                <div class="actions" style="margin-top: 0.75rem">
+                  <button type="button" class="btn btn-secondary" id="btn-apply-fixes">Apply selected fixes</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3 class="panel-title">Preview</h3>
+          <p class="panel-lead">First rows after current cleaning state.</p>
+          <div class="table-wrap" id="preview-wrap">
+            <table class="data-table">
+              <thead id="preview-head"></thead>
+              <tbody id="preview-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3 class="panel-title">Column overview</h3>
+          <div class="table-wrap column-summary">
+            <table id="column-table"></table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3 class="panel-title">Visualizations</h3>
+          <p class="panel-lead">Automatic charts for numeric distributions and top categorical values (up to a few columns).</p>
+          <div class="charts-row" id="charts-row"></div>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn btn-ghost" id="btn-back-upload">Back to upload</button>
+          <button type="button" class="btn btn-primary" id="btn-proceed-synthetic">Continue to synthetic data</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="static/js/app.js"></script>
+  </body>
+</html>
