@@ -52,20 +52,11 @@
             <p>or click to browse · UTF-8 recommended</p>
             <input id="file-input" type="file" accept=".csv,text/csv" />
           </div>
+
           <div class="file-meta" id="file-meta" aria-live="polite">
             <div class="file-meta-row">
               <span><strong>File:</strong> <span id="file-name">—</span></span>
               <span><strong>Shape:</strong> <span id="file-stats">—</span></span>
-            </div>
-            <div class="upload-preview" id="upload-preview" hidden>
-              <h3 class="upload-preview-title">Data preview</h3>
-              <p class="upload-preview-lead">First five rows from your file.</p>
-              <div class="table-wrap upload-preview-table">
-                <table class="data-table">
-                  <thead id="upload-preview-head"></thead>
-                  <tbody id="upload-preview-body"></tbody>
-                </table>
-              </div>
             </div>
             <div class="actions">
               <button type="button" class="btn btn-primary" id="btn-continue" disabled>Continue to inspection</button>
@@ -123,6 +114,13 @@
         </div>
 
         <div class="panel">
+          <h3 class="panel-title">Column overview</h3>
+          <div class="table-wrap column-summary">
+            <table id="column-table"></table>
+          </div>
+        </div>
+
+        <div class="panel">
           <h3 class="panel-title">Preview</h3>
           <p class="panel-lead">First rows after current cleaning state.</p>
           <div class="table-wrap" id="preview-wrap">
@@ -134,13 +132,6 @@
         </div>
 
         <div class="panel">
-          <h3 class="panel-title">Column overview</h3>
-          <div class="table-wrap column-summary">
-            <table id="column-table"></table>
-          </div>
-        </div>
-
-        <div class="panel">
           <h3 class="panel-title">Visualizations</h3>
           <p class="panel-lead">Automatic charts for numeric distributions and top categorical values (up to a few columns).</p>
           <div class="charts-row" id="charts-row"></div>
@@ -148,10 +139,223 @@
 
         <div class="actions">
           <button type="button" class="btn btn-ghost" id="btn-back-upload">Back to upload</button>
+          <button type="button" class="btn btn-primary" id="btn-proceed-metadata">Continue to metadata</button>
+        </div>
+      </section>
+
+      <section id="view-metadata" class="hidden" aria-labelledby="metadata-heading">
+        <div class="panel">
+          <h2 class="panel-title" id="metadata-heading">Metadata dashboard</h2>
+          <p class="panel-lead">
+            Your CSV is summarized into <strong>descriptive metadata</strong> (statistics and structure — not a copy of
+            every cell). The cards below are what a synthetic generator would use to match shape and marginals. Use
+            <strong>Edit metadata</strong> on any column to adjust labels, how the field should be treated, or notes
+            for the synthesis step.
+          </p>
+          <ol class="metadata-flow">
+            <li><strong>Parse</strong> — Read headers and cell values from your session.</li>
+            <li><strong>Profile</strong> — Counts, types, and distributions per column.</li>
+            <li><strong>Adjust</strong> — Include / exclude and edits shape the JSON contract.</li>
+            <li><strong>Generate</strong> — The next step will consume the JSON (see dropdown for the full export).</li>
+          </ol>
+        </div>
+
+        <div id="metadata-synth-reset-all-wrap" class="meta-synth-global-bar hidden" aria-live="polite">
+          <p class="meta-synth-global-text">Synthetic targets have been customized (columns and/or correlations).</p>
+          <button type="button" class="btn btn-ghost" id="btn-reset-all-synth">Reset all synthetic overrides</button>
+        </div>
+
+        <div class="panel">
+          <h3 class="panel-title">Summary</h3>
+          <p class="panel-lead">Key figures at a glance for this dataset and the synthetic schema.</p>
+          <div class="meta-dash-stats" id="metadata-dashboard-stats"></div>
+        </div>
+
+        <div class="panel">
+          <h3 class="panel-title">Hygiene context</h3>
+          <p class="panel-lead">Inspection findings are carried forward so quality concerns stay visible next to the schema.</p>
+          <ul class="issue-list" id="metadata-hygiene-list"></ul>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header-row">
+            <h3 class="panel-title panel-title-inline">Columns</h3>
+            <div id="metadata-columns-synth-reset-wrap" class="meta-reset-toolbar-inline hidden">
+              <button type="button" class="btn btn-ghost" id="btn-reset-columns-synth">Reset column synthetic overrides</button>
+            </div>
+          </div>
+          <p class="panel-lead">
+            Each card is one field in the metadata package. Toggle <strong>Include</strong> to drop it from synthesis
+            metadata only; your uploaded table in this browser session is unchanged.
+          </p>
+          <div class="meta-dash-columns" id="metadata-dashboard-columns"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header-row">
+            <h3 class="panel-title panel-title-inline">Numeric correlations</h3>
+            <div id="metadata-corr-synth-reset-wrap" class="meta-reset-toolbar-inline hidden">
+              <button type="button" class="btn btn-ghost" id="btn-reset-corr-synth">Reset correlation synthetic overrides</button>
+            </div>
+          </div>
+          <p class="panel-lead">
+            Pairwise <strong>Pearson</strong> correlations use rows where <em>both</em> values parse as numbers (same row
+            alignment). Large files scan the first segment of rows for speed; very wide numeric tables show a subset of
+            columns. <strong>Observed</strong> is from your file; <strong>Synthetic targets</strong> is what generation
+            uses — <strong>click an off-diagonal cell in the right table</strong> to change a target (left table stays read-only).
+          </p>
+          <div id="metadata-correlation" class="metadata-correlation" aria-live="polite"></div>
+        </div>
+
+        <div class="panel">
+          <h3 class="panel-title">Distributions</h3>
+          <p class="panel-lead">Charts reflect the same aggregates that drive histogram- and frequency-based synthetic sampling.</p>
+          <div class="charts-row" id="metadata-charts-row"></div>
+        </div>
+
+        <details class="meta-json-details">
+          <summary class="meta-json-summary">Technical JSON metadata (full export)</summary>
+          <p class="panel-lead meta-json-details-lead">
+            Open only when you need the exact payload for APIs or documentation. This object is what downstream tools
+            should consume — it contains no raw row dump.
+          </p>
+          <pre class="metadata-json" id="metadata-json" aria-label="Synthetic metadata JSON"></pre>
+        </details>
+
+        <div class="actions">
+          <button type="button" class="btn btn-ghost" id="btn-back-inspect-meta">Back to inspection</button>
           <button type="button" class="btn btn-primary" id="btn-proceed-synthetic">Continue to synthetic data</button>
         </div>
       </section>
+
+      <section id="view-synthetic" class="hidden" aria-labelledby="synthetic-heading">
+        <div class="panel">
+          <h2 class="panel-title" id="synthetic-heading">Synthetic data generation</h2>
+          <p class="panel-lead">
+            Generation from the metadata package is not wired in this build. When implemented, this step will call the
+            generator with the JSON from the metadata screen and stream or download a synthetic CSV.
+          </p>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn btn-ghost" id="btn-back-metadata">Back to metadata</button>
+          <button type="button" class="btn btn-primary" id="btn-proceed-review">Continue to review</button>
+        </div>
+      </section>
+
+      <section id="view-review" class="hidden" aria-labelledby="review-heading">
+        <div class="panel">
+          <h2 class="panel-title" id="review-heading">Review</h2>
+          <p class="panel-lead">
+            Fidelity checks and comparison views will live here (synthetic vs metadata targets). Placeholder for the
+            Southlake challenge deliverable.
+          </p>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn btn-ghost" id="btn-back-synthetic">Back to synthetic data</button>
+        </div>
+      </section>
     </main>
+
+    <div id="metadata-edit-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="metadata-edit-dialog-title" tabindex="-1">
+      <div class="modal-backdrop" id="metadata-edit-backdrop"></div>
+      <div class="modal-card modal-card-wide">
+        <h3 class="modal-title" id="metadata-edit-dialog-title">Edit column metadata</h3>
+        <p class="modal-lead">Source column: <strong id="metadata-edit-title"></strong></p>
+        <div class="modal-field">
+          <label for="metadata-edit-label">Display label for synthesis</label>
+          <input type="text" id="metadata-edit-label" class="modal-input" autocomplete="off" />
+        </div>
+        <div class="modal-field">
+          <label for="metadata-edit-type">Schema type intent</label>
+          <select id="metadata-edit-type" class="modal-input">
+            <option value="auto">Auto (use computed profile)</option>
+            <option value="numeric">Treat as numeric in schema</option>
+            <option value="text">Treat as text / categorical in schema</option>
+          </select>
+        </div>
+        <fieldset class="modal-fieldset" id="metadata-edit-numeric-fieldset" hidden>
+          <legend class="modal-legend">Synthetic numeric distribution (targets for generation)</legend>
+          <p class="modal-hint" id="metadata-edit-numeric-observed"></p>
+          <div class="modal-field">
+            <label for="metadata-edit-distribution">Distribution shape</label>
+            <select id="metadata-edit-distribution" class="modal-input">
+              <option value="auto">Match observed (auto)</option>
+              <option value="normal">Normal-like</option>
+              <option value="skew_right">Right-skewed</option>
+              <option value="skew_left">Left-skewed</option>
+              <option value="uniform">Roughly uniform</option>
+              <option value="multimodal">Multimodal / mixture</option>
+            </select>
+          </div>
+          <div class="modal-field-grid-2">
+            <div class="modal-field">
+              <label for="metadata-edit-synth-min">Range — min</label>
+              <input type="text" id="metadata-edit-synth-min" class="modal-input" inputmode="decimal" autocomplete="off" placeholder="Observed if empty" />
+            </div>
+            <div class="modal-field">
+              <label for="metadata-edit-synth-max">Range — max</label>
+              <input type="text" id="metadata-edit-synth-max" class="modal-input" inputmode="decimal" autocomplete="off" placeholder="Observed if empty" />
+            </div>
+            <div class="modal-field">
+              <label for="metadata-edit-synth-mean">Mean</label>
+              <input type="text" id="metadata-edit-synth-mean" class="modal-input" inputmode="decimal" autocomplete="off" placeholder="Observed if empty" />
+            </div>
+            <div class="modal-field">
+              <label for="metadata-edit-synth-variance">Variance</label>
+              <input type="text" id="metadata-edit-synth-variance" class="modal-input" inputmode="decimal" autocomplete="off" placeholder="Observed if empty" />
+            </div>
+          </div>
+        </fieldset>
+        <fieldset class="modal-fieldset" id="metadata-edit-categorical-fieldset" hidden>
+          <legend class="modal-legend">Synthetic categorical / label mix</legend>
+          <p class="modal-hint" id="metadata-edit-categorical-observed"></p>
+          <div class="modal-field">
+            <label for="metadata-edit-cat-mode">Category strategy</label>
+            <select id="metadata-edit-cat-mode" class="modal-input">
+              <option value="auto">Match observed proportions</option>
+              <option value="uniform_balance">Roughly balance categories</option>
+              <option value="merge_rare">Merge rare categories below a threshold</option>
+              <option value="custom">Custom proportions (JSON)</option>
+            </select>
+          </div>
+          <div class="modal-field" id="metadata-edit-cat-merge-wrap">
+            <label for="metadata-edit-cat-merge-pct">Merge rare below (proportion of rows, 0–1)</label>
+            <input type="text" id="metadata-edit-cat-merge-pct" class="modal-input" inputmode="decimal" placeholder="e.g. 0.02" autocomplete="off" />
+          </div>
+          <div class="modal-field" id="metadata-edit-cat-custom-wrap">
+            <label for="metadata-edit-cat-custom">Custom proportions JSON</label>
+            <textarea id="metadata-edit-cat-custom" class="modal-textarea" rows="5" placeholder='[{"value":"A","proportion":0.5},{"value":"B","proportion":0.5}]'></textarea>
+          </div>
+        </fieldset>
+        <div class="modal-field">
+          <label for="metadata-edit-note">Notes for synthesis</label>
+          <textarea id="metadata-edit-note" class="modal-textarea" rows="3" placeholder="Optional guidance for generators or reviewers…"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="metadata-edit-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="metadata-edit-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="correlation-edit-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="correlation-edit-dialog-title" tabindex="-1">
+      <div class="modal-backdrop" id="correlation-edit-backdrop"></div>
+      <div class="modal-card">
+        <h3 class="modal-title" id="correlation-edit-dialog-title">Synthetic correlation target</h3>
+        <p class="modal-lead" id="correlation-edit-pair-label"></p>
+        <p class="modal-hint">Observed Pearson <em>r</em> (from your file): <strong id="correlation-edit-observed"></strong></p>
+        <div class="modal-field">
+          <label for="correlation-edit-target">Target <em>r</em> for synthetic data (−1 to 1)</label>
+          <input type="number" id="correlation-edit-target" class="modal-input" step="0.01" min="-1" max="1" />
+        </div>
+        <p class="modal-hint">Use this to soften or reshape linear relationships for privacy or scenario testing. The metadata JSON keeps both observed and target values.</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="correlation-edit-cancel">Cancel</button>
+          <button type="button" class="btn btn-ghost" id="correlation-edit-clear">Clear override</button>
+          <button type="button" class="btn btn-primary" id="correlation-edit-save">Save</button>
+        </div>
+      </div>
+    </div>
 
     <script src="static/js/app.js"></script>
   </body>
