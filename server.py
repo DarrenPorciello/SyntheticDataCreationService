@@ -176,6 +176,29 @@ class QualityAnalyzeResponse(BaseModel):
     issues: list[IssueOut]
 
 
+class MetadataSuggestionItemOut(BaseModel):
+    title: str
+    detail: str
+    importance: str = "medium"
+    related_columns: list[str] = Field(default_factory=list)
+    suggested_action: str = ""
+
+
+class MetadataSuggestRequest(BaseModel):
+    file_name: str = ""
+    row_count: int = Field(ge=0)
+    headers: list[str] = Field(default_factory=list)
+    column_stats: list[ColumnStatIn] = Field(default_factory=list)
+    sample_rows: list[dict[str, str]] = Field(default_factory=list)
+    hygiene_issues: list[IssueIn] = Field(default_factory=list)
+    schema_context: dict = Field(default_factory=dict)
+
+
+class MetadataSuggestResponse(BaseModel):
+    summary: str
+    suggestions: list[MetadataSuggestionItemOut]
+
+
 app = FastAPI(title="Southlake Synthetic Data Studio API")
 
 app.add_middleware(
@@ -317,6 +340,131 @@ If sample data might resemble real people, avoid repeating exact identifiers in 
         ]
 
     return QualityAnalyzeResponse(summary=summary[:4000], issues=issues)
+
+
+def _normalize_metadata_suggestions(raw: list) -> list[MetadataSuggestionItemOut]:
+    out: list[MetadataSuggestionItemOut] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:4]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip() or "Suggestion"
+        detail = str(item.get("detail", "")).strip() or "—"
+        rc = item.get("related_columns", [])
+        cols: list[str] = []
+        if isinstance(rc, list):
+            for x in rc[:3]:
+                if isinstance(x, str) and x.strip():
+                    cols.append(x.strip()[:120])
+        imp = str(item.get("importance", "medium")).strip().lower()
+        if imp not in ("high", "medium", "low"):
+            imp = "medium"
+        act = str(item.get("suggested_action", "")).strip()
+        out.append(
+            MetadataSuggestionItemOut(
+                title=title[:120],
+                detail=detail[:900],
+                importance=imp,
+                related_columns=cols,
+                suggested_action=act[:280],
+            )
+        )
+    return out
+
+
+@app.post("/api/metadata-suggest", response_model=MetadataSuggestResponse)
+async def metadata_suggest(body: MetadataSuggestRequest):
+    api_key = _openai_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not set in the server environment.")
+
+    stats = body.column_stats[:MAX_COLUMNS]
+    headers = body.headers[:MAX_COLUMNS]
+    sample: list[dict[str, str]] = []
+    for row in body.sample_rows[:MAX_SAMPLE_ROWS]:
+        slim: dict[str, str] = {}
+        for h in headers:
+            if h in row:
+                slim[h] = _truncate_cell(row[h])
+        sample.append(slim)
+
+    hy = [i.model_dump() for i in body.hygiene_issues[:24]]
+    ctx = body.schema_context if isinstance(body.schema_context, dict) else {}
+    try:
+        ctx_json = json.dumps(ctx, ensure_ascii=False)
+    except (TypeError, ValueError):
+        ctx_json = "{}"
+    if len(ctx_json) > 24000:
+        schema_ctx: dict = {
+            "_truncated": True,
+            "note": "schema_context exceeded size limit; omitting. Reduce columns or edit payload size.",
+        }
+    else:
+        schema_ctx = json.loads(ctx_json)
+
+    payload = {
+        "file_name": body.file_name,
+        "row_count": body.row_count,
+        "column_stats": [s.model_dump() for s in stats],
+        "sample_rows": sample,
+        "hygiene_issues": hy,
+        "schema_context": schema_ctx,
+    }
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    system = """You are the **AI Metadata Agent** for Synthetic Data Studio. You speak directly to customers and analysts who are shaping metadata so the system can generate **high-quality synthetic data** that reflects their real dataset.
+
+You receive (as JSON): dataset shape, per-column profile stats, a small row sample, hygiene notes from an earlier quality pass, and **schema_context** (columns excluded from synthesis, user edits to labels/types/notes, synthetic distribution hints, and correlation targets).
+
+Respond with ONLY valid JSON (no markdown, no code fences):
+{"summary": string, "suggestions": array}
+
+**summary** — One or two short sentences in plain, confident language: what stands out about their metadata and how ready it looks for synthetic generation. No jargon about systems or infrastructure.
+
+**suggestions** — Between **0 and 4** objects. Only include changes that would **meaningfully improve synthetic output** given this data (e.g. include/exclude decisions, clearer labels or type intent, synthesis notes, realistic numeric/category targets, correlation targets, handling identifiers or skewed fields). Skip low-impact or speculative tips. If metadata already fits the data well, return **[]**.
+
+Each suggestion object:
+{"title": string, "detail": string, "importance": "high"|"medium"|"low", "related_columns": string[], "suggested_action": string}
+
+- **title**: Benefit-focused, ≤8 words.
+- **detail**: 1–2 short sentences, friendly and specific.
+- **importance**: high, medium, or low priority for impact on synthetic quality.
+- **related_columns**: Up to 3 names; every name MUST appear in the provided headers/column_stats. Use [] if none.
+- **suggested_action**: One short imperative line the user can follow in the metadata UI (optional; use "" if redundant).
+
+Rules: Never invent column names. Avoid repeating the same idea twice. Do not mention APIs, keys, models, servers, or "OpenAI". Write as the in-product agent."""
+
+    user = json.dumps(payload, ensure_ascii=False)
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+        completion = await client.chat.completions.create(
+            model=model,
+            temperature=0.28,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OpenAI request failed: {e!s}") from e
+
+    content = completion.choices[0].message.content
+    if not content:
+        raise HTTPException(status_code=502, detail="Empty response from model.")
+
+    try:
+        data = _parse_json_object(content)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Model returned invalid JSON: {e}") from e
+
+    summary = str(data.get("summary", "")).strip() or "Here is a quick read on your metadata for synthetic data."
+    suggestions = _normalize_metadata_suggestions(data.get("suggestions", []))
+
+    return MetadataSuggestResponse(summary=summary[:1200], suggestions=suggestions)
 
 
 @app.get("/")

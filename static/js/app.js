@@ -5,12 +5,26 @@
   const STEPS = [
     { id: "input", name: "Input data", desc: "Upload your CSV" },
     { id: "inspect", name: "Data inspection", desc: "Quality & summary" },
-    { id: "metadata", name: "Metadata", desc: "Schema for synthesis" },
+    { id: "metadata", name: "Metadata", desc: "Schema & change summary" },
     { id: "synthetic", name: "Synthetic data", desc: "Generate" },
     { id: "review", name: "Review", desc: "Validate" },
+    { id: "analyze", name: "Analyze", desc: "Explore results" },
   ];
 
-  const METADATA_SCHEMA_VERSION = "1.2";
+  const METADATA_NOTE_SECTIONS = ["dashboard", "ai", "summary", "hygiene", "columns", "correlations", "distributions", "json"];
+
+  const METADATA_SECTION_NOTE_LABELS = {
+    dashboard: "Dashboard",
+    ai: "AI Metadata Agent",
+    summary: "Summary",
+    hygiene: "Hygiene context",
+    columns: "Columns",
+    correlations: "Numeric correlations",
+    distributions: "Distributions",
+    json: "Technical JSON export",
+  };
+
+  const METADATA_SCHEMA_VERSION = "1.4";
 
   const COLUMN_SYNTH_EDIT_KEYS = [
     "synthDist",
@@ -36,6 +50,16 @@
     columnMetadataEdits: {},
     /** Map pairKey(colA,colB) -> synthetic Pearson r in [-1,1] */
     correlationEdits: {},
+    /** Within step 2: "editor" | "changesReview" */
+    metadataPane: "editor",
+    /** Per accordion section on metadata screen: rationale notes */
+    metadataSectionNotes: {},
+    /** Per section on metadata change summary: rationale for that grouping */
+    metadataChangeReviewNotes: {},
+    /** Last coach run: { runId, summary, items: [{ id, title, detail, importance, suggested_action, related_columns }] } */
+    metadataAiLastRun: null,
+    /** Accepted coach recommendations persisted for synthesis + change summary */
+    metadataAiAccepted: [],
   };
 
   const els = {};
@@ -97,8 +121,11 @@
     els.viewUpload = $("view-upload");
     els.viewInspect = $("view-inspect");
     els.viewMetadata = $("view-metadata");
+    els.viewMetadataReview = $("view-metadata-review");
+    els.metadataChangesRoot = $("metadata-changes-root");
     els.viewSynthetic = $("view-synthetic");
     els.viewReview = $("view-review");
+    els.viewAnalyze = $("view-analyze");
     els.btnBackUpload = $("btn-back-upload");
     els.agentBanner = $("agent-banner");
     els.agentSummary = $("agent-summary");
@@ -117,16 +144,24 @@
     els.btnApplyFixes = $("btn-apply-fixes");
     els.btnProceedMetadata = $("btn-proceed-metadata");
     els.btnBackInspectMeta = $("btn-back-inspect-meta");
-    els.btnProceedSynthetic = $("btn-proceed-synthetic");
-    els.btnBackMetadata = $("btn-back-metadata");
+    els.btnProceedMetadataReview = $("btn-proceed-metadata-review");
+    els.btnBackMetadataEditor = $("btn-back-metadata-editor");
+    els.btnProceedSyntheticFromReview = $("btn-proceed-synthetic-from-review");
+    els.btnBackFromSynthetic = $("btn-back-to-metadata");
     els.btnProceedReview = $("btn-proceed-review");
     els.btnBackSynthetic = $("btn-back-synthetic");
+    els.btnPrintMetadataChanges = $("btn-print-metadata-changes");
+    els.btnProceedAnalyze = $("btn-proceed-analyze");
+    els.btnBackAnalyze = $("btn-back-analyze");
     els.metadataHygieneList = $("metadata-hygiene-list");
     els.metadataDashboardStats = $("metadata-dashboard-stats");
     els.metadataDashboardColumns = $("metadata-dashboard-columns");
     els.metadataJson = $("metadata-json");
     els.metadataChartsRow = $("metadata-charts-row");
     els.metadataCorrelation = $("metadata-correlation");
+    els.metadataAiSuggestBtn = $("btn-metadata-ai-suggest");
+    els.metadataAiSuggestStatus = $("metadata-ai-suggest-status");
+    els.metadataAiSuggestBody = $("metadata-ai-suggest-body");
     els.metadataEditModal = $("metadata-edit-modal");
     els.metadataEditTitle = $("metadata-edit-title");
     els.metadataEditLabel = $("metadata-edit-label");
@@ -157,11 +192,8 @@
     els.correlationEditSave = $("correlation-edit-save");
     els.correlationEditCancel = $("correlation-edit-cancel");
     els.correlationEditClear = $("correlation-edit-clear");
-    els.metadataSynthResetAllWrap = $("metadata-synth-reset-all-wrap");
     els.btnResetAllSynth = $("btn-reset-all-synth");
-    els.metadataColumnsSynthResetWrap = $("metadata-columns-synth-reset-wrap");
     els.btnResetColumnsSynth = $("btn-reset-columns-synth");
-    els.metadataCorrSynthResetWrap = $("metadata-corr-synth-reset-wrap");
     els.btnResetCorrSynth = $("btn-reset-corr-synth");
   }
 
@@ -201,6 +233,12 @@
       columnInclude: state.columnInclude,
       columnMetadataEdits: state.columnMetadataEdits || {},
       correlationEdits: state.correlationEdits || {},
+      metadataPane: state.metadataPane === "changesReview" ? "changesReview" : "editor",
+      metadataSectionNotes: state.metadataSectionNotes && typeof state.metadataSectionNotes === "object" ? state.metadataSectionNotes : {},
+      metadataChangeReviewNotes:
+        state.metadataChangeReviewNotes && typeof state.metadataChangeReviewNotes === "object" ? state.metadataChangeReviewNotes : {},
+      metadataAiLastRun: state.metadataAiLastRun && typeof state.metadataAiLastRun === "object" ? state.metadataAiLastRun : null,
+      metadataAiAccepted: Array.isArray(state.metadataAiAccepted) ? state.metadataAiAccepted : [],
     });
   }
 
@@ -218,6 +256,20 @@
       state.columnMetadataEdits =
         o.columnMetadataEdits && typeof o.columnMetadataEdits === "object" ? o.columnMetadataEdits : {};
       state.correlationEdits = o.correlationEdits && typeof o.correlationEdits === "object" ? o.correlationEdits : {};
+      state.metadataPane = o.metadataPane === "changesReview" ? "changesReview" : "editor";
+      state.metadataSectionNotes =
+        o.metadataSectionNotes && typeof o.metadataSectionNotes === "object" ? o.metadataSectionNotes : {};
+      state.metadataChangeReviewNotes =
+        o.metadataChangeReviewNotes && typeof o.metadataChangeReviewNotes === "object" ? o.metadataChangeReviewNotes : {};
+      state.metadataAiLastRun =
+        o.metadataAiLastRun && typeof o.metadataAiLastRun === "object" && Array.isArray(o.metadataAiLastRun.items)
+          ? {
+              runId: o.metadataAiLastRun.runId,
+              summary: String(o.metadataAiLastRun.summary || ""),
+              items: o.metadataAiLastRun.items,
+            }
+          : null;
+      state.metadataAiAccepted = Array.isArray(o.metadataAiAccepted) ? o.metadataAiAccepted : [];
       return true;
     } catch {
       return false;
@@ -539,6 +591,9 @@
         how_used_for_synthesis: userNote || defaultHow,
       };
 
+      const aiCoachForCol = acceptedAiGuidanceForColumn(c.name);
+      if (aiCoachForCol.length) base.accepted_ai_coach_guidance = aiCoachForCol;
+
       const observedNumFull =
         c.inferred === "numeric" && c.numericSample.length ? computeNumericSummaryFromSamples(c.numericSample) : null;
       const observedCatRef = topCategoriesObserved(rows, c.name, 10);
@@ -570,6 +625,48 @@
       if (synthCat) o.synthetic_categorical_targets = synthCat;
       return o;
     });
+  }
+
+  function acceptedAiGuidanceForColumn(colName) {
+    const acc = state.metadataAiAccepted;
+    if (!Array.isArray(acc) || !acc.length) return [];
+    const out = [];
+    for (const rec of acc) {
+      const cols = Array.isArray(rec.related_columns) ? rec.related_columns : [];
+      if (!cols.includes(colName)) continue;
+      out.push({
+        recommendation_id: rec.id,
+        title: String(rec.title || "").slice(0, 200),
+        detail: String(rec.detail || "").slice(0, 500),
+        importance: rec.importance === "high" || rec.importance === "low" ? rec.importance : "medium",
+        suggested_action: rec.suggested_action ? String(rec.suggested_action).slice(0, 400) : undefined,
+        accepted_at_utc: rec.accepted_at_utc || undefined,
+      });
+    }
+    return out;
+  }
+
+  function columnsTouchedByAcceptedAi() {
+    const acc = state.metadataAiAccepted;
+    if (!Array.isArray(acc) || !acc.length) return [];
+    const set = new Set();
+    for (const rec of acc) {
+      const cols = Array.isArray(rec.related_columns) ? rec.related_columns : [];
+      cols.forEach((c) => {
+        if (c && state.headers.includes(c)) set.add(c);
+      });
+    }
+    return [...set];
+  }
+
+  function briefAcceptedAiColumnHint(colName) {
+    const hits = acceptedAiGuidanceForColumn(colName);
+    if (!hits.length) return "";
+    if (hits.length === 1) {
+      const t = hits[0].title || "Accepted tip";
+      return `AI coach: ${t.length > 42 ? `${t.slice(0, 40)}…` : t}`;
+    }
+    return `AI coach: ${hits.length} accepted tips`;
   }
 
   function parseNumericForCorrelation(value) {
@@ -793,6 +890,33 @@
     return body;
   }
 
+  function buildCorrelationEditSummaryList(cols, srcMat, nameToEnriched) {
+    const ed = state.correlationEdits || {};
+    const keys = Object.keys(ed);
+    if (!keys.length) return "";
+    const lis = keys
+      .map((key) => {
+        const parts = key.split("\x00");
+        if (parts.length !== 2) return "";
+        const [ca, cb] = parts;
+        const ia = cols.indexOf(ca);
+        const ib = cols.indexOf(cb);
+        let obs = "—";
+        if (ia >= 0 && ib >= 0 && srcMat[ia] && srcMat[ia][ib] != null && !Number.isNaN(srcMat[ia][ib])) {
+          obs = Number(srcMat[ia][ib]).toFixed(4);
+        }
+        const syn = ed[key];
+        const synStr = syn != null && Number.isFinite(Number(syn)) ? Number(syn).toFixed(4) : String(syn);
+        const la = (nameToEnriched.get(ca) && nameToEnriched.get(ca).label_for_synthesis) || ca;
+        const lb = (nameToEnriched.get(cb) && nameToEnriched.get(cb).label_for_synthesis) || cb;
+        return `<li class="corr-edits-summary-item"><span class="corr-edits-pair">${escapeHtml(la)} ↔ ${escapeHtml(lb)}</span> — observed <em>r</em> <span class="meta-diff-from">${escapeHtml(obs)}</span> <span class="meta-diff-arrow" aria-hidden="true">→</span> synthetic target <span class="meta-diff-to">${escapeHtml(synStr)}</span></li>`;
+      })
+      .filter(Boolean)
+      .join("");
+    if (!lis) return "";
+    return `<div class="corr-edits-summary"><h4 class="corr-edits-summary-title">Edited correlation targets</h4><ul class="corr-edits-summary-list">${lis}</ul></div>`;
+  }
+
   function renderMetadataCorrelation(el, block, nameToEnriched) {
     if (!el) return;
     if (!block || block.numeric_column_count < 2) {
@@ -813,8 +937,8 @@
       return { name, short, full };
     });
     const thead = buildCorrelationTableHead(labels);
-    const bodyObs = buildCorrelationTableBodyObserved(cols, labels, srcMat);
     const bodySynth = buildCorrelationTableBodySynthetic(cols, labels, mat, srcMat);
+    const editSummary = buildCorrelationEditSummaryList(cols, srcMat, nameToEnriched);
     const topPairs = (block.top_pairs || []).slice(0, 12);
     const topList =
       topPairs.length > 0
@@ -844,7 +968,7 @@
     foot.push(`Scanned up to ${Number(block.rows_scanned).toLocaleString()} rows (from the start of the file).`);
     if (block.matrix_truncated) {
       foot.push(
-        `Both tables show the first ${cols.length} numeric column(s) in file order (${block.numeric_column_count} numeric total).`
+        `The matrix shows the first ${cols.length} numeric column(s) in file order (${block.numeric_column_count} numeric total).`
       );
     }
     el.innerHTML = `
@@ -853,21 +977,14 @@
         <span class="corr-legend-item"><span class="corr-swatch neu"></span> Weak / diagonal</span>
         <span class="corr-legend-item"><span class="corr-swatch pos"></span> Positive r</span>
       </div>
-      <p class="corr-dual-caption">Compare <strong>observed</strong> (from your data) with <strong>synthetic targets</strong> (used for generation). Cell colors follow the value in each table.</p>
-      <div class="corr-matrices-row">
-        <div class="corr-matrix-block">
-          <h4 class="corr-matrix-label">Observed (from file)</h4>
-          <div class="corr-table-scroll">
-            <table class="corr-table" aria-label="Observed Pearson correlations"><thead>${thead}</thead><tbody>${bodyObs}</tbody></table>
-          </div>
-        </div>
-        <div class="corr-matrix-block">
-          <h4 class="corr-matrix-label">Synthetic targets (for generation)</h4>
-          <div class="corr-table-scroll">
-            <table class="corr-table" aria-label="Synthetic target Pearson correlations"><thead>${thead}</thead><tbody>${bodySynth}</tbody></table>
-          </div>
+      <p class="corr-single-caption">One matrix of <strong>synthetic targets</strong> (what generation uses). Off-diagonal cells you change are highlighted; hover a cell for observed <em>r</em> vs target.</p>
+      <div class="corr-matrix-single">
+        <h4 class="corr-matrix-label corr-matrix-label-solo">Synthetic correlation targets</h4>
+        <div class="corr-table-scroll">
+          <table class="corr-table" aria-label="Synthetic Pearson correlation targets"><thead>${thead}</thead><tbody>${bodySynth}</tbody></table>
         </div>
       </div>
+      ${editSummary}
       <p class="corr-footnote">${escapeHtml(foot.join(" "))}</p>
       <div class="corr-top-wrap">
         <h4 class="corr-top-title">Strongest linear relationships (by |synthetic r|)</h4>
@@ -899,6 +1016,28 @@
       })),
       columns,
       numeric_correlation_pearson,
+      metadata_step_notes: (() => {
+        const o = {};
+        METADATA_NOTE_SECTIONS.forEach((k) => {
+          const v = state.metadataSectionNotes && String(state.metadataSectionNotes[k] || "").trim();
+          if (v) o[k] = v;
+        });
+        return Object.keys(o).length ? o : undefined;
+      })(),
+      accepted_ai_metadata_guidance: (() => {
+        const acc = state.metadataAiAccepted;
+        if (!Array.isArray(acc) || !acc.length) return undefined;
+        return acc.map((rec) => ({
+          id: rec.id,
+          accepted_at_utc: rec.accepted_at_utc,
+          title: String(rec.title || "").slice(0, 200),
+          detail: String(rec.detail || "").slice(0, 800),
+          importance: rec.importance === "high" || rec.importance === "low" ? rec.importance : "medium",
+          suggested_action: rec.suggested_action ? String(rec.suggested_action).slice(0, 400) : undefined,
+          related_columns: Array.isArray(rec.related_columns) ? rec.related_columns.filter((c) => headers.includes(c)) : [],
+          agent_summary_snapshot: rec.agent_summary_snapshot ? String(rec.agent_summary_snapshot).slice(0, 500) : undefined,
+        }));
+      })(),
       transparency: {
         how_source_becomes_metadata: [
           "The CSV is parsed locally. We never send the full file to a model unless you run the optional inspection API call (sample rows only).",
@@ -908,6 +1047,8 @@
           "Pairwise Pearson correlations summarize linear co-movement between numeric columns on rows where both values parse as numbers (see numeric_correlation_pearson).",
           "matrix holds synthesis targets; matrix_source keeps observed r for the same column order. Click heatmap cells to override linear association targets for synthetic data.",
           "Per-column Edit metadata can set synthetic numeric shape/range/moments and categorical mix strategies — see synthetic_numeric_targets and synthetic_categorical_targets on each column.",
+          "metadata_step_notes captures optional rationale typed into each accordion on the metadata screen.",
+          "accepted_ai_metadata_guidance lists coach recommendations you explicitly accepted; per-column copies appear as accepted_ai_coach_guidance for generators that honor field-level intent.",
         ],
       },
     };
@@ -953,6 +1094,31 @@
       const a = cell.getAttribute("data-corr-a");
       const b = cell.getAttribute("data-corr-b");
       if (a && b) openCorrelationEditModal(a, b);
+    });
+  }
+
+  let metadataSectionNotesBound = false;
+  function bindMetadataSectionNotesOnce() {
+    if (metadataSectionNotesBound || !els.viewMetadata) return;
+    metadataSectionNotesBound = true;
+    els.viewMetadata.addEventListener("input", (e) => {
+      const ta = e.target.closest("[data-meta-note-section]");
+      if (!ta) return;
+      const key = ta.getAttribute("data-meta-note-section");
+      if (!key || !METADATA_NOTE_SECTIONS.includes(key)) return;
+      if (!state.metadataSectionNotes) state.metadataSectionNotes = {};
+      state.metadataSectionNotes[key] = ta.value;
+      saveSession();
+    });
+  }
+
+  function syncMetadataSectionNotesInputs() {
+    if (!els.viewMetadata) return;
+    METADATA_NOTE_SECTIONS.forEach((k) => {
+      const el = els.viewMetadata.querySelector(`[data-meta-note-section="${k}"]`);
+      if (!el) return;
+      const v = (state.metadataSectionNotes && state.metadataSectionNotes[k]) || "";
+      if (el.value !== v) el.value = v;
     });
   }
 
@@ -1037,6 +1203,293 @@
     return hasColumnSynthOverrides() || hasCorrelationSynthOverrides();
   }
 
+  function hasColumnIncludeExclusion() {
+    return !!(state.columnInclude && state.headers.some((h) => state.columnInclude[h] === false));
+  }
+
+  function hasColumnMetadataEditsKeys() {
+    return !!(state.columnMetadataEdits && Object.keys(state.columnMetadataEdits).length > 0);
+  }
+
+  function hasMetadataPackageDrift() {
+    return (
+      hasColumnIncludeExclusion() ||
+      hasColumnMetadataEditsKeys() ||
+      hasCorrelationSynthOverrides() ||
+      hasColumnSynthOverrides() ||
+      hasAcceptedAiMetadataGuidance()
+    );
+  }
+
+  function hasAcceptedAiMetadataGuidance() {
+    return Array.isArray(state.metadataAiAccepted) && state.metadataAiAccepted.length > 0;
+  }
+
+  function metadataSectionShowRationaleNote(sectionId) {
+    const incExc = hasColumnIncludeExclusion();
+    const colEd = hasColumnMetadataEditsKeys();
+    const corr = hasCorrelationSynthOverrides();
+    const colSynth = hasColumnSynthOverrides();
+    const anySynth = hasAnySyntheticOverrides();
+    const aiCoach =
+      hasAcceptedAiMetadataGuidance() ||
+      !!(state.metadataAiLastRun && state.metadataAiLastRun.items && state.metadataAiLastRun.items.length);
+    if (sectionId === "dashboard") return anySynth;
+    if (sectionId === "ai") return aiCoach;
+    if (sectionId === "summary") return incExc || colEd;
+    if (sectionId === "hygiene") return false;
+    if (sectionId === "columns") return incExc || colEd;
+    if (sectionId === "correlations") return corr;
+    if (sectionId === "distributions") return colSynth;
+    if (sectionId === "json") return hasMetadataPackageDrift();
+    return false;
+  }
+
+  function updateMetadataSectionNotesVisibility() {
+    if (!els.viewMetadata) return;
+    METADATA_NOTE_SECTIONS.forEach((id) => {
+      const wrap = els.viewMetadata.querySelector(`[data-meta-note-wrap="${id}"]`);
+      if (!wrap) return;
+      wrap.classList.toggle("hidden", !metadataSectionShowRationaleNote(id));
+    });
+  }
+
+  function changeReviewSectionHasChanges(sectionId) {
+    const incExc = hasColumnIncludeExclusion();
+    const colEd = hasColumnMetadataEditsKeys();
+    const corr = hasCorrelationSynthOverrides();
+    const colSynth = hasColumnSynthOverrides();
+    const anySynth = hasAnySyntheticOverrides();
+    const names = collectColumnsWithActivity(state.headers, getColumnIncludeMap(), state.columnMetadataEdits || {});
+    if (sectionId === "dashboard") return anySynth;
+    if (sectionId === "ai") return hasAcceptedAiMetadataGuidance();
+    if (sectionId === "summary") return incExc || colEd;
+    if (sectionId === "hygiene") return false;
+    if (sectionId === "columns") return names.length > 0;
+    if (sectionId === "correlations") return corr;
+    if (sectionId === "distributions") return colSynth;
+    if (sectionId === "json") return hasMetadataPackageDrift();
+    return false;
+  }
+
+  function countCorrelationOverridesForColumn(colName) {
+    const ed = state.correlationEdits;
+    if (!ed || typeof ed !== "object") return 0;
+    let n = 0;
+    for (const k of Object.keys(ed)) {
+      const parts = k.split("\x00");
+      if (parts.length === 2 && (parts[0] === colName || parts[1] === colName)) n++;
+    }
+    return n;
+  }
+
+  function getColStatOrFallback(colName, colStats) {
+    return (
+      colStats.find((s) => s.name === colName) || {
+        name: colName,
+        inferred: "text",
+        numericSample: [],
+        nonNull: 0,
+        missing: 0,
+        unique: 0,
+      }
+    );
+  }
+
+  function collectColumnsWithActivity(headers, inc, edits) {
+    const set = new Set();
+    headers.forEach((h) => {
+      if (inc[h] === false) set.add(h);
+    });
+    Object.keys(edits || {}).forEach((h) => set.add(h));
+    const ced = state.correlationEdits || {};
+    Object.keys(ced).forEach((k) => {
+      const parts = k.split("\x00");
+      if (parts.length === 2) {
+        set.add(parts[0]);
+        set.add(parts[1]);
+      }
+    });
+    columnsTouchedByAcceptedAi().forEach((h) => set.add(h));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }
+
+  function buildColumnEditDiffItems(colName, colStat, ed, includedInSchema) {
+    const items = [];
+    if (!includedInSchema) {
+      items.push({ field: "Schema inclusion", from: "Included", to: "Excluded from synthesis metadata" });
+    }
+    if (!ed || typeof ed !== "object") return items;
+    const dlab = ed.displayLabel && String(ed.displayLabel).trim();
+    if (dlab && dlab !== colName) {
+      items.push({ field: "Display label", from: colName, to: dlab });
+    }
+    if (ed.treatAsType === "numeric" || ed.treatAsType === "text") {
+      items.push({
+        field: "Schema type intent",
+        from: `Auto (profile: ${colStat.inferred})`,
+        to: ed.treatAsType,
+      });
+    }
+    if (ed.synthesisNote && String(ed.synthesisNote).trim()) {
+      const sn = String(ed.synthesisNote).trim();
+      items.push({
+        field: "Notes for synthesis",
+        from: "(none)",
+        to: sn.length > 280 ? `${sn.slice(0, 280)}…` : sn,
+      });
+    }
+    if (ed.synthDist && ed.synthDist !== "auto") {
+      items.push({ field: "Synthetic distribution shape", from: "auto", to: String(ed.synthDist) });
+    }
+    if (String(ed.synthMin || "").trim()) {
+      items.push({ field: "Synthetic range min", from: "(unset)", to: String(ed.synthMin).trim() });
+    }
+    if (String(ed.synthMax || "").trim()) {
+      items.push({ field: "Synthetic range max", from: "(unset)", to: String(ed.synthMax).trim() });
+    }
+    if (String(ed.synthMean || "").trim()) {
+      items.push({ field: "Synthetic mean", from: "(unset)", to: String(ed.synthMean).trim() });
+    }
+    if (String(ed.synthVariance || "").trim()) {
+      items.push({ field: "Synthetic variance", from: "(unset)", to: String(ed.synthVariance).trim() });
+    }
+    if (ed.synthCatMode && ed.synthCatMode !== "auto") {
+      items.push({ field: "Category strategy", from: "auto", to: String(ed.synthCatMode) });
+    }
+    if (String(ed.synthCatMergePct || "").trim()) {
+      items.push({ field: "Merge rare below proportion", from: "(unset)", to: String(ed.synthCatMergePct).trim() });
+    }
+    if (String(ed.synthCatCustom || "").trim()) {
+      const full = String(ed.synthCatCustom).trim();
+      const snip = full.slice(0, 120);
+      items.push({
+        field: "Custom category mix (JSON)",
+        from: "(unset)",
+        to: snip.length < full.length ? `${snip}…` : snip,
+      });
+    }
+    const aiHits = acceptedAiGuidanceForColumn(colName);
+    for (const h of aiHits) {
+      const to = `${h.title}${h.detail ? ` — ${h.detail.length > 160 ? `${h.detail.slice(0, 158)}…` : h.detail}` : ""}`;
+      items.push({ field: "AI coach (accepted)", from: "(no accepted guidance)", to });
+    }
+    return items;
+  }
+
+  function briefColumnChangeSummary(colName, colStat, ed, includedInSchema) {
+    const parts = [];
+    if (!includedInSchema) parts.push("Excluded from schema");
+    if (ed && typeof ed === "object") {
+      const dlab = ed.displayLabel && String(ed.displayLabel).trim();
+      if (dlab && dlab !== colName) parts.push(`Label → ${dlab.length > 24 ? `${dlab.slice(0, 22)}…` : dlab}`);
+      if (ed.treatAsType === "numeric" || ed.treatAsType === "text") parts.push(`Type → ${ed.treatAsType}`);
+      if (ed.synthesisNote && String(ed.synthesisNote).trim()) parts.push("Synthesis note");
+      if (columnEditHasSynthOverrides(ed)) parts.push("Synthetic targets");
+    }
+    const nc = countCorrelationOverridesForColumn(colName);
+    if (nc) parts.push(nc === 1 ? "1 correlation override" : `${nc} correlation overrides`);
+    const aiHint = briefAcceptedAiColumnHint(colName);
+    if (aiHint) parts.push(aiHint);
+    return parts.join(" · ");
+  }
+
+  function changeReviewCarriedNoteHtml(sectionId) {
+    const raw = (state.metadataSectionNotes && state.metadataSectionNotes[sectionId]) || "";
+    const t = raw.trim();
+    if (!t) return "";
+    return `<div class="meta-changes-carried-note"><span class="meta-changes-carried-label">From metadata step</span><p class="meta-changes-carried-body">${escapeHtml(t)}</p></div>`;
+  }
+
+  function changeReviewSectionHtml(sectionId, title, innerBodyHtml) {
+    const carried = changeReviewCarriedNoteHtml(sectionId);
+    const noteWrap = `<div class="meta-section-note meta-changes-review-note"><label class="meta-section-note-label" for="chg-review-note-${sectionId}">Notes on why you made changes in this section (optional)</label><textarea id="chg-review-note-${sectionId}" class="meta-section-note-input" data-change-review-note="${escapeAttr(sectionId)}" rows="2" placeholder="Summarize rationale for reviewers or auditors…"></textarea></div>`;
+    return `<section class="panel meta-changes-block meta-changes-section" data-change-section="${escapeAttr(sectionId)}"><h3 class="panel-title">${escapeHtml(title)}</h3>${carried}<div class="meta-changes-section-body">${innerBodyHtml}</div>${noteWrap}</section>`;
+  }
+
+  function buildColumnsChangeReviewBody(colStats) {
+    const inc = getColumnIncludeMap();
+    const edits = state.columnMetadataEdits || {};
+    const names = collectColumnsWithActivity(state.headers, inc, edits);
+    const blocks = [];
+    if (state.headers.some((h) => inc[h] === false)) {
+      blocks.push(
+        `<div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert="exclusions">Revert all exclusions (include every column)</button></div>`
+      );
+    }
+    if (!names.length) {
+      blocks.push(`<p class="panel-lead meta-changes-lead-tight">No column inclusions, labels, or field metadata were changed.</p>`);
+      return blocks.join("");
+    }
+    for (const col of names) {
+      const st = getColStatOrFallback(col, colStats);
+      const ed = getEditForCol(col);
+      const included = inc[col] !== false;
+      let items = buildColumnEditDiffItems(col, st, ed, included);
+      const nc = countCorrelationOverridesForColumn(col);
+      if (!items.length && nc > 0) {
+        items.push({
+          field: "Correlation targets",
+          from: "(no label/type edits on this column)",
+          to: `${nc} pair override${nc > 1 ? "s" : ""} (see Correlations)`,
+        });
+      }
+      if (!items.length) continue;
+      const lis = items
+        .map(
+          (it) =>
+            `<li class="meta-diff-row"><span class="meta-diff-field">${escapeHtml(it.field)}</span> <span class="meta-diff-pair"><span class="meta-diff-from">${escapeHtml(it.from)}</span><span class="meta-diff-arrow" aria-hidden="true">→</span><span class="meta-diff-to">${escapeHtml(it.to)}</span></span></li>`
+        )
+        .join("");
+      blocks.push(
+        `<div class="meta-changes-col-block"><h4 class="meta-changes-col-title"><code>${escapeHtml(col)}</code></h4><ul class="meta-changes-list meta-diff-list">${lis}</ul><div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-column="${escapeAttr(col)}">Revert changes for this column</button></div></div>`
+      );
+    }
+    return blocks.join("");
+  }
+
+  function buildCorrelationsChangeReviewBody(colStats) {
+    const corrEd = state.correlationEdits || {};
+    const corrKeys = Object.keys(corrEd);
+    if (!corrKeys.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">No Pearson correlation targets were overridden.</p>`;
+    }
+    const block = buildNumericCorrelationBlock(state.headers, state.rows, colStats);
+    const cols = block.matrix_columns || [];
+    const src = block.matrix_source || [];
+    const rows = corrKeys
+      .map((key) => {
+        const parts = key.split("\x00");
+        if (parts.length !== 2) return "";
+        const [ca, cb] = parts;
+        const ia = cols.indexOf(ca);
+        const ib = cols.indexOf(cb);
+        let obs = "—";
+        if (ia >= 0 && ib >= 0 && src[ia] && src[ia][ib] != null && !Number.isNaN(src[ia][ib])) {
+          obs = Number(src[ia][ib]).toFixed(4);
+        }
+        const syn = corrEd[key];
+        const synStr = syn != null && Number.isFinite(Number(syn)) ? Number(syn).toFixed(4) : String(syn);
+        return `<tr><td><code>${escapeHtml(ca)}</code></td><td><code>${escapeHtml(cb)}</code></td><td class="meta-diff-from-cell">${escapeHtml(obs)}</td><td class="meta-diff-to-cell"><strong>${escapeHtml(synStr)}</strong></td><td class="no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-corr-a="${escapeAttr(ca)}" data-revert-corr-b="${escapeAttr(cb)}">Revert</button></td></tr>`;
+      })
+      .filter(Boolean)
+      .join("");
+    if (!rows) {
+      return `<p class="panel-lead meta-changes-lead-tight">Correlation overrides exist but are outside the current numeric matrix window.</p>`;
+    }
+    return `<div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert="correlations">Revert all correlation targets</button></div><p class="panel-lead">Each row shows the <strong>observed</strong> Pearson <em>r</em> from your file and the <strong>synthetic target</strong> stored for generation.</p><div class="table-wrap"><table class="data-table meta-changes-table"><thead><tr><th>Column A</th><th>Column B</th><th>Before (observed <em>r</em>)</th><th>After (synthetic target)</th><th class="no-print"></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  function syncChangeReviewNoteTextareas() {
+    if (!els.metadataChangesRoot) return;
+    els.metadataChangesRoot.querySelectorAll("[data-change-review-note]").forEach((ta) => {
+      const k = ta.getAttribute("data-change-review-note");
+      if (!k) return;
+      const v = (state.metadataChangeReviewNotes && state.metadataChangeReviewNotes[k]) || "";
+      if (ta.value !== v) ta.value = v;
+    });
+  }
+
   function stripSyntheticFieldsFromColumnEdit(o) {
     const x = { ...(o || {}) };
     COLUMN_SYNTH_EDIT_KEYS.forEach((k) => {
@@ -1075,13 +1528,86 @@
     toast("All synthetic overrides cleared.");
   }
 
-  function updateSyntheticResetUiVisibility() {
+  function repositionSyntheticResetButtons() {
     const col = hasColumnSynthOverrides();
     const corr = hasCorrelationSynthOverrides();
     const any = col || corr;
-    if (els.metadataColumnsSynthResetWrap) els.metadataColumnsSynthResetWrap.classList.toggle("hidden", !col);
-    if (els.metadataCorrSynthResetWrap) els.metadataCorrSynthResetWrap.classList.toggle("hidden", !corr);
-    if (els.metadataSynthResetAllWrap) els.metadataSynthResetAllWrap.classList.toggle("hidden", !any);
+
+    const dash = $("meta-section-dashboard");
+    const colDet = $("meta-section-columns");
+    const corrDet = $("meta-section-correlations");
+
+    const openAreaAll = $("meta-reset-all-open-area");
+    const sumSlotAll = $("meta-reset-all-summary-slot");
+    const openSlotAll = $("meta-reset-all-open-slot");
+    const btnAll = els.btnResetAllSynth;
+    if (btnAll) {
+      if (!any) {
+        btnAll.classList.add("hidden");
+        if (openAreaAll) openAreaAll.classList.add("hidden");
+      } else {
+        btnAll.classList.remove("hidden");
+        if (dash && !dash.open && sumSlotAll) {
+          sumSlotAll.appendChild(btnAll);
+          if (openAreaAll) openAreaAll.classList.add("hidden");
+        } else if (dash && dash.open && openSlotAll) {
+          openSlotAll.appendChild(btnAll);
+          if (openAreaAll) openAreaAll.classList.remove("hidden");
+        }
+      }
+    }
+
+    const btnCol = els.btnResetColumnsSynth;
+    const colSum = $("meta-columns-reset-summary-slot");
+    const colOpen = $("meta-columns-reset-open-slot");
+    const toolCol = $("meta-columns-open-toolbar");
+    if (btnCol) {
+      if (!col) {
+        btnCol.classList.add("hidden");
+        if (toolCol) toolCol.classList.add("hidden");
+      } else {
+        btnCol.classList.remove("hidden");
+        if (colDet && !colDet.open && colSum) {
+          colSum.appendChild(btnCol);
+          if (toolCol) toolCol.classList.add("hidden");
+        } else if (colDet && colDet.open && colOpen) {
+          colOpen.appendChild(btnCol);
+          if (toolCol) toolCol.classList.remove("hidden");
+        }
+      }
+    }
+
+    const btnCorr = els.btnResetCorrSynth;
+    const corrSum = $("meta-corr-reset-summary-slot");
+    const corrOpen = $("meta-corr-reset-open-slot");
+    const toolCorr = $("meta-corr-open-toolbar");
+    if (btnCorr) {
+      if (!corr) {
+        btnCorr.classList.add("hidden");
+        if (toolCorr) toolCorr.classList.add("hidden");
+      } else {
+        btnCorr.classList.remove("hidden");
+        if (corrDet && !corrDet.open && corrSum) {
+          corrSum.appendChild(btnCorr);
+          if (toolCorr) toolCorr.classList.add("hidden");
+        } else if (corrDet && corrDet.open && corrOpen) {
+          corrOpen.appendChild(btnCorr);
+          if (toolCorr) toolCorr.classList.remove("hidden");
+        }
+      }
+    }
+  }
+
+  let metadataSectionToggleBound = false;
+
+  function bindMetadataSectionDetailsToggleOnce() {
+    if (metadataSectionToggleBound || !els.viewMetadata) return;
+    metadataSectionToggleBound = true;
+    els.viewMetadata.addEventListener("toggle", (e) => {
+      if (e.target && e.target.classList && e.target.classList.contains("meta-section-panel")) {
+        repositionSyntheticResetButtons();
+      }
+    });
   }
 
   function bindSyntheticResetButtonsOnce() {
@@ -1282,7 +1808,11 @@
     bindMetadataModalOnce();
     bindCorrelationEditModalOnce();
     bindSyntheticResetButtonsOnce();
-    if (!state.rows.length || !els.metadataHygieneList || !els.metadataDashboardStats || !els.metadataDashboardColumns || !els.metadataJson) return;
+    bindMetadataSectionDetailsToggleOnce();
+    if (!state.rows.length || !els.metadataHygieneList || !els.metadataDashboardStats || !els.metadataDashboardColumns || !els.metadataJson) {
+      repositionSyntheticResetButtons();
+      return;
+    }
 
     const colStats = inferColumnStats(state.headers, state.rows);
     const enriched = enrichColumnsForMetadata(state.headers, state.rows, colStats);
@@ -1318,7 +1848,14 @@
         const dtypeLine = c.user_schema_dtype_override
           ? `Computed <strong>${escapeHtml(c.computed_profile_dtype)}</strong> · you set schema as <strong>${escapeHtml(c.user_schema_dtype_override)}</strong>`
           : `Type profile: <strong>${escapeHtml(c.computed_profile_dtype)}</strong>`;
-        return `<article class="meta-dash-card">
+        const st = getColStatOrFallback(c.name, colStats);
+        const ed = getEditForCol(c.name);
+        const changeHint = briefColumnChangeSummary(c.name, st, ed, inc[c.name] !== false);
+        const modClass = changeHint ? " meta-dash-card--modified" : "";
+        const hintBlock = changeHint
+          ? `<p class="meta-dash-change-hint" role="status"><span class="meta-dash-change-indicator" aria-hidden="true"></span><span class="meta-dash-change-hint-text">${escapeHtml(changeHint)}</span></p>`
+          : "";
+        return `<article class="meta-dash-card${modClass}">
           <div class="meta-dash-card-head">
             <div>
               <h4 class="meta-dash-card-title">${escapeHtml(c.label_for_synthesis)}</h4>
@@ -1334,6 +1871,7 @@
           </dl>
           <p class="meta-dash-summary">${escapeHtml(summary)}</p>
           ${synthLine}
+          ${hintBlock}
           <p class="meta-dash-role">${escapeHtml(String(c.how_used_for_synthesis || "").slice(0, 220))}${(c.how_used_for_synthesis || "").length > 220 ? "…" : ""}</p>
           <button type="button" class="btn btn-secondary meta-dash-edit-btn" data-col="${escapeAttr(c.name)}">Edit metadata</button>
         </article>`;
@@ -1358,7 +1896,96 @@
 
     els.metadataJson.textContent = JSON.stringify(pkg, null, 2);
     renderChartsInto(colStats, els.metadataChartsRow, state.metaCharts, "mchart");
-    updateSyntheticResetUiVisibility();
+    repositionSyntheticResetButtons();
+    bindMetadataSectionNotesOnce();
+    bindMetadataAiSuggestOnce();
+    bindMetadataAiAcceptOnce();
+    syncMetadataSectionNotesInputs();
+    updateMetadataSectionNotesVisibility();
+    refreshMetadataAiSuggestionsFromState();
+  }
+
+  function renderMetadataChangesReview() {
+    if (!els.metadataChangesRoot || !state.rows.length) return;
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const pkg = buildSyntheticMetadataPayload(state.headers, state.rows, colStats);
+    els.metadataChangesRoot.innerHTML = buildMetadataChangesReviewHtml(pkg, colStats);
+    const jp = $("metadata-changes-json-pre");
+    if (jp) jp.textContent = JSON.stringify(pkg, null, 2);
+    syncChangeReviewNoteTextareas();
+  }
+
+  function buildAiCoachChangeReviewBody() {
+    const acc = state.metadataAiAccepted || [];
+    if (!acc.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">No accepted coach recommendations.</p>`;
+    }
+    const blocks = acc
+      .map((rec) => {
+        const imp = rec.importance === "high" || rec.importance === "low" ? rec.importance : "medium";
+        const cols = (rec.related_columns || []).filter((c) => state.headers.includes(c));
+        const colsHtml = cols.length
+          ? `<p class="meta-changes-ai-cols"><strong>Related columns:</strong> ${cols.map((c) => `<code>${escapeHtml(c)}</code>`).join(", ")}</p>`
+          : `<p class="meta-changes-ai-cols"><em>General schema / multi-column guidance</em></p>`;
+        const act =
+          rec.suggested_action && String(rec.suggested_action).trim()
+            ? `<p class="meta-changes-ai-action"><strong>Suggested next step:</strong> ${escapeHtml(String(rec.suggested_action).trim())}</p>`
+            : "";
+        const when = rec.accepted_at_utc
+          ? escapeHtml(new Date(rec.accepted_at_utc).toLocaleString())
+          : "\u2014";
+        return `<div class="meta-changes-col-block meta-changes-ai-rec">
+          <h4 class="meta-changes-col-title"><span class="metadata-ai-importance metadata-ai-importance--${imp}">${escapeHtml(imp)}</span> ${escapeHtml(String(rec.title || "Recommendation"))}</h4>
+          ${colsHtml}
+          <p class="panel-lead meta-changes-lead-tight">${escapeHtml(String(rec.detail || ""))}</p>
+          ${act}
+          <p class="meta-changes-ai-meta">Accepted ${when}</p>
+          <div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-ai-id="${escapeAttr(rec.id)}">Remove acceptance</button></div>
+        </div>`;
+      })
+      .join("");
+    return `<p class="panel-lead">These coach tips are included in your synthesis metadata until you remove them. Column-scoped items also appear under <strong>Columns</strong>.</p>${blocks}`;
+  }
+
+  function buildMetadataChangesReviewHtml(pkg, colStats) {
+    const inner = [];
+    let anySection = false;
+
+    for (const sid of METADATA_NOTE_SECTIONS) {
+      if (!changeReviewSectionHasChanges(sid)) continue;
+      anySection = true;
+      const title = METADATA_SECTION_NOTE_LABELS[sid] || sid;
+      let body = "";
+      if (sid === "columns") {
+        body = buildColumnsChangeReviewBody(colStats);
+      } else if (sid === "correlations") {
+        body = buildCorrelationsChangeReviewBody(colStats);
+      } else if (sid === "dashboard") {
+        body = `<p class="panel-lead meta-changes-lead-tight">Synthetic numeric, categorical, or correlation targets were customized from profiling defaults. Column- and pair-level detail appears under <strong>Columns</strong> and <strong>Correlations</strong>.</p>`;
+      } else if (sid === "ai") {
+        body = buildAiCoachChangeReviewBody();
+      } else if (sid === "summary") {
+        body = `<p class="panel-lead meta-changes-lead-tight">Summary figures on the metadata screen reflect your current include/exclude choices and column metadata edits.</p>`;
+      } else if (sid === "distributions") {
+        body = `<p class="panel-lead meta-changes-lead-tight">Charts use the same aggregates as synthesis. You set at least one column’s <strong>synthetic distribution or category strategy</strong> in Edit metadata — see <strong>Columns</strong> for exact before/after values.</p>`;
+      } else if (sid === "json") {
+        body = `<p class="panel-lead meta-changes-lead-tight">The live JSON export on the metadata screen reflects all overrides listed in the sections above.</p>`;
+      }
+      inner.push(changeReviewSectionHtml(sid, title, body));
+    }
+
+    if (!anySection) {
+      inner.push(
+        `<div class="panel meta-changes-block"><p class="panel-lead meta-changes-lead-tight">No manual overrides are recorded yet. When you exclude columns, edit field metadata, adjust synthetic targets, change correlation targets, or accept AI Metadata Agent recommendations, only the relevant sections will appear here.</p></div>`
+      );
+    } else {
+      inner.push(
+        `<details class="meta-section-panel meta-changes-json-details no-print"><summary class="meta-section-summary">Full synthesis metadata JSON (after your changes)</summary><div class="meta-section-body"><pre class="metadata-json meta-changes-json-pre" id="metadata-changes-json-pre" aria-label="Metadata JSON after edits"></pre></div></details>`
+      );
+    }
+
+    const printBanner = `<div class="meta-changes-print-banner"><h1 class="meta-changes-print-title">Metadata change report</h1><p class="meta-changes-print-meta">${escapeHtml(state.fileName || "dataset.csv")} · ${escapeHtml(new Date().toLocaleString())}</p></div>`;
+    return `${printBanner}${inner.join("")}`;
   }
 
   function sevClass(sev) {
@@ -1386,6 +2013,277 @@
     });
   }
 
+  function buildMetadataSuggestPayload() {
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const inc = getColumnIncludeMap();
+    const edits = state.columnMetadataEdits || {};
+    const editSummaries = {};
+    Object.keys(edits)
+      .sort()
+      .forEach((col) => {
+        const e = edits[col];
+        if (!e || typeof e !== "object") return;
+        const sn = e.synthesisNote && String(e.synthesisNote).trim();
+        editSummaries[col] = {
+          display_label: e.displayLabel && String(e.displayLabel).trim() ? String(e.displayLabel).trim() : undefined,
+          treat_as_type: e.treatAsType === "numeric" || e.treatAsType === "text" ? e.treatAsType : undefined,
+          has_synthetic_targets: columnEditHasSynthOverrides(e),
+          synthesis_note_snippet: sn ? sn.slice(0, 200) : undefined,
+        };
+      });
+    const corr = state.correlationEdits || {};
+    const corrList = [];
+    Object.keys(corr).forEach((k) => {
+      const parts = k.split("\x00");
+      if (parts.length !== 2) return;
+      corrList.push({
+        column_a: parts[0],
+        column_b: parts[1],
+        synthetic_target_r: corr[k],
+      });
+    });
+    return {
+      file_name: state.fileName,
+      row_count: state.rows.length,
+      headers: state.headers.slice(0, 80),
+      column_stats: buildColumnStatsPayload(colStats),
+      sample_rows: buildSampleRowsForApi(state.rows, state.headers, 25),
+      hygiene_issues: (state.issues || []).slice(0, 20).map((i) => ({
+        sev: i.sev,
+        title: i.title,
+        detail: i.detail,
+      })),
+      schema_context: {
+        columns_excluded_from_schema: state.headers.filter((h) => inc[h] === false),
+        column_metadata_edits: editSummaries,
+        correlation_targets: corrList.slice(0, 40),
+        accepted_ai_coach_titles: (state.metadataAiAccepted || []).map((r) => String(r.title || "").slice(0, 120)).filter(Boolean),
+      },
+    };
+  }
+
+  function clearMetadataAiSuggestionsUi() {
+    if (els.metadataAiSuggestStatus) els.metadataAiSuggestStatus.textContent = "";
+    if (els.metadataAiSuggestBody) {
+      els.metadataAiSuggestBody.classList.add("hidden");
+      els.metadataAiSuggestBody.innerHTML = "";
+    }
+  }
+
+  function resetMetadataAiCoachState() {
+    state.metadataAiLastRun = null;
+    state.metadataAiAccepted = [];
+    clearMetadataAiSuggestionsUi();
+  }
+
+  function normalizeMetadataAiSuggestionItems(rawSuggestions, runId) {
+    const list = Array.isArray(rawSuggestions) ? rawSuggestions.slice(0, 4) : [];
+    return list.map((s, i) => {
+      const impRaw = String(s.importance || "medium").toLowerCase();
+      const imp = impRaw === "high" || impRaw === "low" ? impRaw : "medium";
+      const related = Array.isArray(s.related_columns)
+        ? s.related_columns
+            .map((c) => String(c || "").trim())
+            .filter((c) => c && state.headers.includes(c))
+            .slice(0, 3)
+        : [];
+      return {
+        id: `ai-${runId}-${i}`,
+        title: String(s.title || "Recommendation").slice(0, 200),
+        detail: String(s.detail || "").slice(0, 800),
+        importance: imp,
+        suggested_action: s.suggested_action ? String(s.suggested_action).slice(0, 400) : "",
+        related_columns: related,
+      };
+    });
+  }
+
+  function isAiSuggestionIdAccepted(id) {
+    return (state.metadataAiAccepted || []).some((x) => x.id === id);
+  }
+
+  function renderMetadataAiSuggestBody() {
+    if (!els.metadataAiSuggestBody) return;
+    const run = state.metadataAiLastRun;
+    if (!run || !Array.isArray(run.items)) {
+      if (hasAcceptedAiMetadataGuidance()) {
+        const n = state.metadataAiAccepted.length;
+        els.metadataAiSuggestBody.innerHTML = `<div class="metadata-ai-accepted-only-banner" role="status">
+          <p class="metadata-ai-accepted-only-text"><strong>${n}</strong> coach recommendation(s) are saved for synthesis. Run <strong>Get recommendations</strong> for a fresh list, or open <strong>Review changes</strong> to manage them.</p>
+        </div>`;
+        els.metadataAiSuggestBody.classList.remove("hidden");
+      } else {
+        els.metadataAiSuggestBody.classList.add("hidden");
+        els.metadataAiSuggestBody.innerHTML = "";
+      }
+      return;
+    }
+
+    const summary = String(run.summary || "").trim() || "Here is a quick read on your metadata.";
+    const summaryBlock = `<div class="metadata-ai-summary-card"><p class="metadata-ai-summary-text">${escapeHtml(summary)}</p></div>`;
+    const items = run.items;
+    if (!items.length) {
+      els.metadataAiSuggestBody.innerHTML = `${summaryBlock}<div class="metadata-ai-empty-state" role="status">
+        <p class="metadata-ai-empty-title">No priority updates right now</p>
+        <p class="metadata-ai-empty-detail">The agent did not flag must-do metadata changes. You can refine fields manually or ask again after you adjust your data or schema.</p>
+      </div>`;
+      els.metadataAiSuggestBody.classList.remove("hidden");
+      return;
+    }
+
+    const cards = items
+      .map((s, i) => {
+        const n = i + 1;
+        const title = escapeHtml(String(s.title || "Recommendation"));
+        const detail = escapeHtml(String(s.detail || ""));
+        const imp = s.importance === "high" || s.importance === "low" ? s.importance : "medium";
+        const act = s.suggested_action ? escapeHtml(String(s.suggested_action)) : "";
+        const cols = Array.isArray(s.related_columns)
+          ? s.related_columns
+              .filter(Boolean)
+              .slice(0, 3)
+              .map((c) => `<span class="metadata-ai-pill">${escapeHtml(String(c))}</span>`)
+              .join("")
+          : "";
+        const colsRow = cols ? `<div class="metadata-ai-pills" aria-label="Related columns">${cols}</div>` : "";
+        const actRow = act
+          ? `<p class="metadata-ai-next"><span class="metadata-ai-next-label">Next step</span> ${act}</p>`
+          : "";
+        const accepted = isAiSuggestionIdAccepted(s.id);
+        const cardExtra = accepted ? " metadata-ai-card--accepted" : "";
+        const btnClass = accepted ? "btn btn-sm metadata-ai-accept-btn metadata-ai-accept-btn--accepted" : "btn btn-sm btn-secondary metadata-ai-accept-btn";
+        const checkMark = accepted ? "\u2713 " : "";
+        const acceptRow = `<div class="metadata-ai-card-actions">
+          <button type="button" class="${btnClass}" data-ai-suggestion-accept="${escapeAttr(s.id)}" aria-pressed="${accepted ? "true" : "false"}">
+            <span class="metadata-ai-accept-check" aria-hidden="true">${checkMark}</span>
+            <span class="metadata-ai-accept-label">${accepted ? "Accepted" : "Accept"}</span>
+          </button>
+        </div>`;
+        return `<article class="metadata-ai-card metadata-ai-card--${imp}${cardExtra}">
+          <div class="metadata-ai-card-top">
+            <span class="metadata-ai-card-index" aria-hidden="true">${n}</span>
+            <div class="metadata-ai-card-title-wrap">
+              <h4 class="metadata-ai-card-title">${title}</h4>
+              <span class="metadata-ai-importance metadata-ai-importance--${imp}">${escapeHtml(imp)}</span>
+            </div>
+          </div>
+          ${colsRow}
+          <p class="metadata-ai-card-detail">${detail}</p>
+          ${actRow}
+          ${acceptRow}
+        </article>`;
+      })
+      .join("");
+    els.metadataAiSuggestBody.innerHTML = `${summaryBlock}<div class="metadata-ai-card-grid">${cards}</div>`;
+    els.metadataAiSuggestBody.classList.remove("hidden");
+  }
+
+  function refreshMetadataAiSuggestionsFromState() {
+    renderMetadataAiSuggestBody();
+  }
+
+  function toggleAiSuggestionAccept(id) {
+    if (!state.metadataAiAccepted) state.metadataAiAccepted = [];
+    const idx = state.metadataAiAccepted.findIndex((x) => x.id === id);
+    if (idx >= 0) {
+      state.metadataAiAccepted.splice(idx, 1);
+      toast("Recommendation removed from synthesis metadata.");
+    } else {
+      const item =
+        state.metadataAiLastRun && Array.isArray(state.metadataAiLastRun.items)
+          ? state.metadataAiLastRun.items.find((x) => x.id === id)
+          : null;
+      if (!item) {
+        toast("That recommendation is not on this list anymore. Remove it from Review changes if it is still saved.");
+        return;
+      }
+      state.metadataAiAccepted.push({
+        id: item.id,
+        accepted_at_utc: new Date().toISOString(),
+        title: item.title,
+        detail: item.detail,
+        importance: item.importance,
+        suggested_action: item.suggested_action || "",
+        related_columns: Array.isArray(item.related_columns) ? item.related_columns.slice() : [],
+        agent_summary_snapshot: state.metadataAiLastRun.summary || "",
+      });
+      toast("Saved for synthesis and the change summary.");
+    }
+    saveSession();
+    renderMetadataAiSuggestBody();
+    updateMetadataSectionNotesVisibility();
+    if (state.step === 2 && state.metadataPane === "editor") renderMetadata();
+    else if (state.step === 2 && state.metadataPane === "changesReview") renderMetadataChangesReview();
+  }
+
+  let metadataAiSuggestBound = false;
+  function bindMetadataAiSuggestOnce() {
+    if (metadataAiSuggestBound || !els.metadataAiSuggestBtn) return;
+    metadataAiSuggestBound = true;
+    els.metadataAiSuggestBtn.addEventListener("click", () => void runMetadataAiSuggestions());
+  }
+
+  let metadataAiAcceptBound = false;
+  function bindMetadataAiAcceptOnce() {
+    if (metadataAiAcceptBound || !els.viewMetadata) return;
+    metadataAiAcceptBound = true;
+    els.viewMetadata.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-ai-suggestion-accept]");
+      if (!btn) return;
+      e.preventDefault();
+      const id = btn.getAttribute("data-ai-suggestion-accept");
+      if (!id) return;
+      toggleAiSuggestionAccept(id);
+    });
+  }
+
+  async function runMetadataAiSuggestions() {
+    if (!state.rows.length) return;
+    if (!els.metadataAiSuggestBtn) return;
+    els.metadataAiSuggestBtn.disabled = true;
+    if (els.metadataAiSuggestStatus) els.metadataAiSuggestStatus.textContent = "Your agent is reviewing your dataset and metadata…";
+    if (els.metadataAiSuggestBody) {
+      els.metadataAiSuggestBody.classList.add("hidden");
+      els.metadataAiSuggestBody.innerHTML = "";
+    }
+    try {
+      const payload = buildMetadataSuggestPayload();
+      const res = await fetch(`${apiBase()}/api/metadata-suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const raw = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        let msg = res.statusText;
+        if (typeof raw.detail === "string") msg = raw.detail;
+        else if (Array.isArray(raw.detail))
+          msg = raw.detail.map((d) => (d.msg != null ? d.msg : JSON.stringify(d))).join("; ");
+        throw new Error(msg || `Request failed (${res.status})`);
+      }
+      const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const summary = String(raw.summary || "").trim() || "Here is a quick read on your metadata.";
+      const items = normalizeMetadataAiSuggestionItems(raw.suggestions, runId);
+      state.metadataAiLastRun = { runId, summary, items };
+      saveSession();
+      renderMetadataAiSuggestBody();
+      updateMetadataSectionNotesVisibility();
+      if (els.metadataAiSuggestStatus) els.metadataAiSuggestStatus.textContent = "";
+    } catch (err) {
+      console.error(err);
+      let reason = err && err.message ? err.message : String(err);
+      if (/OPENAI_API_KEY|openai.*not set/i.test(reason)) {
+        reason = "The AI Metadata Agent could not run. Setup may still be in progress — please try again later or contact support.";
+      } else if (/OpenAI request failed/i.test(reason)) {
+        reason = "The agent hit a temporary issue. Please try again in a moment.";
+      }
+      toast(reason);
+      if (els.metadataAiSuggestStatus) els.metadataAiSuggestStatus.textContent = reason;
+    } finally {
+      els.metadataAiSuggestBtn.disabled = false;
+    }
+  }
+
   function renderIssueList() {
     els.issueList.innerHTML = state.issues
       .map(
@@ -1395,6 +2293,83 @@
       </li>`
       )
       .join("");
+  }
+
+  function updateMetadataSplitViews() {
+    const n = state.step;
+    const isMeta = n === 2;
+    const ed = state.metadataPane === "editor";
+    if (els.viewMetadata) els.viewMetadata.classList.toggle("hidden", !isMeta || !ed);
+    if (els.viewMetadataReview) els.viewMetadataReview.classList.toggle("hidden", !isMeta || ed);
+  }
+
+  function goMetadataReview() {
+    if (!state.rows.length) return;
+    state.metadataPane = "changesReview";
+    saveSession();
+    updateMetadataSplitViews();
+    renderMetadataChangesReview();
+  }
+
+  function goMetadataEditor() {
+    state.metadataPane = "editor";
+    saveSession();
+    updateMetadataSplitViews();
+    renderMetadata();
+  }
+
+  function backToMetadataFromSynthetic() {
+    state.metadataPane = "editor";
+    saveSession();
+    setStep(2);
+  }
+
+  function printMetadataChangeSummary() {
+    document.body.classList.add("printing-changes-report");
+    const cleanup = () => {
+      document.body.classList.remove("printing-changes-report");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(() => {
+      window.print();
+      setTimeout(cleanup, 800);
+    }, 30);
+  }
+
+  function revertSchemaExclusionsAll() {
+    state.columnInclude = null;
+    saveSession();
+    renderMetadataChangesReview();
+    toast("All columns are included in the synthetic schema again.");
+  }
+
+  function revertColumnMetadataSlice(col) {
+    if (state.columnMetadataEdits) delete state.columnMetadataEdits[col];
+    if (state.columnInclude && state.columnInclude[col] === false) {
+      delete state.columnInclude[col];
+      if (Object.keys(state.columnInclude).length === 0) state.columnInclude = null;
+    }
+    if (state.metadataAiAccepted && state.metadataAiAccepted.length) {
+      state.metadataAiAccepted = state.metadataAiAccepted.filter(
+        (r) => !(Array.isArray(r.related_columns) && r.related_columns.includes(col))
+      );
+    }
+    saveSession();
+    renderMetadataChangesReview();
+    if (state.step === 2 && state.metadataPane === "editor") {
+      renderMetadataAiSuggestBody();
+      updateMetadataSectionNotesVisibility();
+    }
+    toast(`Reverted changes for ${col}.`);
+  }
+
+  function revertOneCorrelationPair(ca, cb) {
+    const key = pairCorrelationKey(ca, cb);
+    if (state.correlationEdits) delete state.correlationEdits[key];
+    saveSession();
+    renderMetadataChangesReview();
+    toast("Correlation override removed for that pair.");
   }
 
   function renderStepper() {
@@ -1415,17 +2390,23 @@
   }
 
   function setStep(n) {
-    if (n < 0 || n > 4) return;
+    if (n < 0 || n > 5) return;
     if (n >= 1 && !state.rows.length) return;
+    const prev = state.step;
     state.step = n;
+    if (prev === 2 && n !== 2) state.metadataPane = "editor";
     renderStepper();
     els.viewUpload.classList.toggle("hidden", n !== 0);
     els.viewInspect.classList.toggle("hidden", n !== 1);
-    if (els.viewMetadata) els.viewMetadata.classList.toggle("hidden", n !== 2);
+    updateMetadataSplitViews();
     if (els.viewSynthetic) els.viewSynthetic.classList.toggle("hidden", n !== 3);
     if (els.viewReview) els.viewReview.classList.toggle("hidden", n !== 4);
+    if (els.viewAnalyze) els.viewAnalyze.classList.toggle("hidden", n !== 5);
     if (n === 1) renderInspect();
-    if (n === 2) renderMetadata();
+    if (n === 2) {
+      if (state.metadataPane === "editor") renderMetadata();
+      else renderMetadataChangesReview();
+    }
   }
 
   function onFileLoaded(fileName, text) {
@@ -1442,6 +2423,10 @@
     state.columnInclude = null;
     state.columnMetadataEdits = {};
     state.correlationEdits = {};
+    state.metadataPane = "editor";
+    state.metadataSectionNotes = {};
+    state.metadataChangeReviewNotes = {};
+    resetMetadataAiCoachState();
   }
 
   function renderInspectStatic(colStats) {
@@ -1773,6 +2758,10 @@
       state.columnInclude = null;
       state.columnMetadataEdits = {};
       state.correlationEdits = {};
+      state.metadataPane = "editor";
+      state.metadataSectionNotes = {};
+      state.metadataChangeReviewNotes = {};
+      resetMetadataAiCoachState();
       state.issues = [];
       els.fileMeta.classList.remove("is-visible");
       els.btnContinue.disabled = true;
@@ -1801,15 +2790,88 @@
       els.btnBackInspectMeta.addEventListener("click", () => setStep(1));
     }
 
-    if (els.btnProceedSynthetic) {
-      els.btnProceedSynthetic.addEventListener("click", () => {
+    if (els.btnProceedMetadataReview) {
+      els.btnProceedMetadataReview.addEventListener("click", () => {
         if (!state.rows.length) return;
+        goMetadataReview();
+      });
+    }
+
+    if (els.btnBackMetadataEditor) {
+      els.btnBackMetadataEditor.addEventListener("click", () => goMetadataEditor());
+    }
+
+    if (els.btnPrintMetadataChanges) {
+      els.btnPrintMetadataChanges.addEventListener("click", () => printMetadataChangeSummary());
+    }
+
+    if (els.viewMetadataReview) {
+      els.viewMetadataReview.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-revert],[data-revert-column],[data-revert-corr-a],[data-revert-ai-id]");
+        if (!btn) return;
+        const col = btn.getAttribute("data-revert-column");
+        const ca = btn.getAttribute("data-revert-corr-a");
+        const cb = btn.getAttribute("data-revert-corr-b");
+        const rv = btn.getAttribute("data-revert");
+        const aiId = btn.getAttribute("data-revert-ai-id");
+        if (aiId) {
+          if (!state.metadataAiAccepted) state.metadataAiAccepted = [];
+          state.metadataAiAccepted = state.metadataAiAccepted.filter((x) => x.id !== aiId);
+          saveSession();
+          renderMetadataChangesReview();
+          renderMetadataAiSuggestBody();
+          updateMetadataSectionNotesVisibility();
+          if (state.step === 2 && state.metadataPane === "editor") renderMetadata();
+          toast("Coach recommendation removed from synthesis metadata.");
+          return;
+        }
+        if (col) {
+          revertColumnMetadataSlice(col);
+          return;
+        }
+        if (ca && cb) {
+          revertOneCorrelationPair(ca, cb);
+          return;
+        }
+        if (rv === "exclusions") {
+          revertSchemaExclusionsAll();
+          return;
+        }
+        if (rv === "correlations") {
+          state.correlationEdits = {};
+          saveSession();
+          renderMetadataChangesReview();
+          toast("All correlation targets reverted.");
+        }
+      });
+      if (!els.viewMetadataReview.dataset.changeReviewInputBound) {
+        els.viewMetadataReview.dataset.changeReviewInputBound = "1";
+        els.viewMetadataReview.addEventListener("input", (e) => {
+          const ta = e.target.closest("[data-change-review-note]");
+          if (!ta) return;
+          const key = ta.getAttribute("data-change-review-note");
+          if (!key || !METADATA_NOTE_SECTIONS.includes(key)) return;
+          if (!state.metadataChangeReviewNotes) state.metadataChangeReviewNotes = {};
+          state.metadataChangeReviewNotes[key] = ta.value;
+          saveSession();
+        });
+      }
+    }
+
+    if (els.btnProceedSyntheticFromReview) {
+      els.btnProceedSyntheticFromReview.addEventListener("click", () => {
+        if (!state.rows.length) return;
+        state.metadataPane = "editor";
+        saveSession();
         setStep(3);
       });
     }
 
-    if (els.btnBackMetadata) {
-      els.btnBackMetadata.addEventListener("click", () => setStep(2));
+    if (els.btnBackFromSynthetic) {
+      els.btnBackFromSynthetic.addEventListener("click", () => {
+        if (!state.rows.length) return;
+        backToMetadataFromSynthetic();
+      });
     }
 
     if (els.btnProceedReview) {
@@ -1823,15 +2885,31 @@
       els.btnBackSynthetic.addEventListener("click", () => setStep(3));
     }
 
+    if (els.btnProceedAnalyze) {
+      els.btnProceedAnalyze.addEventListener("click", () => {
+        if (!state.rows.length) return;
+        setStep(5);
+      });
+    }
+
+    if (els.btnBackAnalyze) {
+      els.btnBackAnalyze.addEventListener("click", () => setStep(4));
+    }
+
     els.stepper.addEventListener("click", (e) => {
       const item = e.target.closest(".stepper-item");
       if (!item) return;
       const i = Number(item.dataset.step);
       if (i === 0) setStep(0);
       if (i === 1 && state.rows.length) setStep(1);
-      if (i === 2 && state.rows.length) setStep(2);
+      if (i === 2 && state.rows.length) {
+        state.metadataPane = "editor";
+        saveSession();
+        setStep(2);
+      }
       if (i === 3 && state.rows.length) setStep(3);
       if (i === 4 && state.rows.length) setStep(4);
+      if (i === 5 && state.rows.length) setStep(5);
     });
   }
 
