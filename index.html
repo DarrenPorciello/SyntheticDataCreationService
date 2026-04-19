@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- __AUTO__ = API on same host as this page when it is FastAPI. If you use Live Preview / http.server, set an explicit API URL, e.g. http://127.0.0.1:8765 -->
     <meta name="api-base" content="__AUTO__" />
-    <title>Synthetic Data Studio — Southlake workflow</title>
+    <title>Synthetix</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -18,22 +18,32 @@
   </head>
   <body>
     <div id="server-warning" class="server-warning hidden" role="alert"></div>
-    <header class="app-header">
+    <header class="app-header" id="app-header">
       <div class="app-header-inner">
         <div class="app-header-top">
-          <div class="brand">
-            <div>
-              <h1 class="brand-title">Synthetic Data Studio</h1>
-              <p class="brand-sub">Agent-assisted CSV intake, hygiene review, and synthetic generation</p>
-              <p class="session-context" id="session-context-title" aria-live="polite"></p>
+          <div class="brand-row">
+            <div class="brand-lockup">
+              <div class="brand-title-row">
+                <img
+                  class="brand-mark"
+                  src="static/images/synthetix-mark.png"
+                  width="40"
+                  height="40"
+                  alt=""
+                  decoding="async"
+                />
+                <h1 class="brand-title">Synthetix</h1>
+              </div>
+              <p class="brand-sub">AI-powered synthetic data studio</p>
             </div>
+            <nav class="app-site-nav" aria-label="Main navigation">
+              <button type="button" class="app-site-nav-btn" data-app-screen="home" id="nav-home">Home</button>
+              <button type="button" class="app-site-nav-btn" data-app-screen="create-new" id="nav-create-new">Create New</button>
+              <button type="button" class="app-site-nav-btn" data-app-screen="library" id="nav-library">Library</button>
+              <button type="button" class="app-site-nav-btn" data-app-screen="education" id="nav-education">Education</button>
+            </nav>
           </div>
-          <nav class="app-site-nav" aria-label="Main navigation">
-            <button type="button" class="app-site-nav-btn" data-app-screen="home" id="nav-home">Home</button>
-            <button type="button" class="app-site-nav-btn" data-app-screen="create-new" id="nav-create-new">Create New</button>
-            <button type="button" class="app-site-nav-btn" data-app-screen="library" id="nav-library">Library</button>
-            <button type="button" class="app-site-nav-btn" data-app-screen="education" id="nav-education">Education</button>
-          </nav>
+          <p class="session-context hidden" id="session-context-title" aria-live="polite" aria-hidden="true"></p>
         </div>
         <div class="app-header-workflow hidden" id="app-header-workflow">
           <nav aria-label="Workflow progress">
@@ -46,10 +56,12 @@
     <main>
       <div id="screen-home" class="app-screen">
         <div class="panel home-panel">
-          <h2 class="panel-title">Home</h2>
-          <p class="panel-lead">
-            Build a metadata-driven synthetic dataset from your CSV, run inspection and review, then print a full session report.
-            Saved sessions stay in this browser until you clear site data.
+          <h2 class="home-welcome">Welcome</h2>
+          <p class="panel-lead home-intro">
+            <strong>Synthetix</strong> walks you from a real CSV to a governed synthetic dataset: upload your file, run data inspection
+            (with optional AI hygiene notes), shape column metadata and distributions, then generate new rows locally from that package.
+            Review outputs against your original profile, print a full session report, and save finished sessions to your
+            <strong>library</strong> in this browser—everything stays on your machine unless you choose small samples for analysis.
           </p>
           <div class="home-actions">
             <button type="button" class="btn btn-primary" id="btn-home-start-new">Start new session</button>
@@ -111,73 +123,107 @@
 
       <section id="view-inspect" class="hidden" aria-labelledby="inspect-heading">
         <div class="panel">
-          <h2 class="panel-title" id="inspect-heading">Data inspection</h2>
-          <p class="panel-lead">
-            Structural summary, charts, and optional fixes — plus an OpenAI-powered hygiene pass when you run the local
-            API server (your key stays on the server).
-          </p>
-
-          <div class="agent-banner" id="agent-banner">
-            <div class="agent-avatar" aria-hidden="true">AI</div>
-            <div class="agent-banner-main">
-              <h3>Data quality agent</h3>
-              <p id="agent-summary">
-                After upload, the inspection step sends column statistics, deterministic checks, and a small row sample
-                to OpenAI through this app’s backend for a written assessment.
+          <details class="review-section inspect-section" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title" id="inspect-heading">Data inspection</span>
+                <span class="review-section-meta">Summary, agent, hygiene findings &amp; optional fixes</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead">
+                Structural summary, charts, and optional fixes — plus an OpenAI-powered hygiene pass when you run the local
+                API server (your key stays on the server).
               </p>
-              <p id="agent-privacy-note" class="agent-privacy-note hidden">
-                A limited row sample is transmitted to the model via your machine’s API process only — not with the key
-                in the browser. Avoid uploading regulated patient data unless your environment is approved for it.
-              </p>
-              <button type="button" class="btn btn-secondary hidden" id="btn-retry-ai">Re-run AI assessment</button>
-            </div>
-          </div>
 
-          <div class="grid-2">
-            <div>
-              <h3 class="panel-title" style="font-size: 0.9375rem">Hygiene findings</h3>
-              <ul class="issue-list" id="issue-list"></ul>
-            </div>
-            <div>
-              <h3 class="panel-title" style="font-size: 0.9375rem">Dataset summary</h3>
-              <div class="stats-grid" id="stats-grid"></div>
-              <div class="fix-panel">
-                <h4>Optional corrections</h4>
-                <div class="fix-options">
-                  <label><input type="checkbox" id="fix-trim" checked /> Trim whitespace in headers and text cells</label>
-                  <label><input type="checkbox" id="fix-dedupe" /> Remove duplicate rows (all columns match)</label>
-                  <label><input type="checkbox" id="fix-drop-empty" /> Remove completely empty rows</label>
+              <div class="agent-banner" id="agent-banner">
+                <div class="agent-avatar" aria-hidden="true">AI</div>
+                <div class="agent-banner-main">
+                  <h3>Data quality agent</h3>
+                  <p id="agent-summary">
+                    After upload, the inspection step sends column statistics, deterministic checks, and a small row sample
+                    to OpenAI through this app’s backend for a written assessment.
+                  </p>
+                  <p id="agent-privacy-note" class="agent-privacy-note hidden">
+                    A limited row sample is transmitted to the model via your machine’s API process only — not with the key
+                    in the browser. Avoid uploading regulated patient data unless your environment is approved for it.
+                  </p>
+                  <button type="button" class="btn btn-secondary hidden" id="btn-retry-ai">Re-run AI assessment</button>
                 </div>
-                <div class="actions" style="margin-top: 0.75rem">
-                  <button type="button" class="btn btn-secondary" id="btn-apply-fixes">Apply selected fixes</button>
+              </div>
+
+              <div class="grid-2">
+                <div>
+                  <h3 class="panel-title" style="font-size: 0.9375rem">Hygiene findings</h3>
+                  <ul class="issue-list" id="issue-list"></ul>
+                </div>
+                <div>
+                  <h3 class="panel-title" style="font-size: 0.9375rem">Dataset summary</h3>
+                  <div class="stats-grid" id="stats-grid"></div>
+                  <div class="fix-panel">
+                    <h4>Optional corrections</h4>
+                    <div class="fix-options">
+                      <label><input type="checkbox" id="fix-trim" checked /> Trim whitespace in headers and text cells</label>
+                      <label><input type="checkbox" id="fix-dedupe" /> Remove duplicate rows (all columns match)</label>
+                      <label><input type="checkbox" id="fix-drop-empty" /> Remove completely empty rows</label>
+                    </div>
+                    <div class="actions" style="margin-top: 0.75rem">
+                      <button type="button" class="btn btn-secondary" id="btn-apply-fixes">Apply selected fixes</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        </div>
+          </details>
 
-        <div class="panel">
-          <h3 class="panel-title">Column overview</h3>
-          <div class="table-wrap column-summary">
-            <table id="column-table"></table>
-          </div>
-        </div>
+          <details class="review-section inspect-section">
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Column overview</span>
+                <span class="review-section-meta">Inferred types, counts, missing &amp; unique values</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <div class="table-wrap column-summary">
+                <table id="column-table"></table>
+              </div>
+            </div>
+          </details>
 
-        <div class="panel">
-          <h3 class="panel-title">Preview</h3>
-          <p class="panel-lead">First rows after current cleaning state.</p>
-          <div class="table-wrap" id="preview-wrap">
-            <table class="data-table">
-              <thead id="preview-head"></thead>
-              <tbody id="preview-body"></tbody>
-            </table>
-          </div>
-        </div>
+          <details class="review-section inspect-section">
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Preview</span>
+                <span class="review-section-meta">First rows after current cleaning state</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead">First rows after current cleaning state.</p>
+              <div class="table-wrap" id="preview-wrap">
+                <table class="data-table">
+                  <thead id="preview-head"></thead>
+                  <tbody id="preview-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </details>
 
-        <div class="panel">
-          <h3 class="panel-title">Visualizations</h3>
-          <p class="panel-lead">Automatic charts for numeric distributions and top categorical values (up to a few columns).</p>
-          <div class="charts-row" id="charts-row"></div>
+          <details class="review-section inspect-section">
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Visualizations</span>
+                <span class="review-section-meta">Numeric distributions &amp; top categories</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead">Automatic charts for numeric distributions and top categorical values (up to a few columns).</p>
+              <div class="charts-row" id="charts-row"></div>
+            </div>
+          </details>
         </div>
 
         <div class="actions">
@@ -518,11 +564,11 @@
         <div class="panel">
           <h2 class="panel-title" id="review-heading">Review synthetic output</h2>
           <p class="panel-lead review-page-lead">
-            Use the sections below to validate synthetic output against your <strong>working original</strong>. Each block can be
-            collapsed when you want a shorter page; they start <strong>expanded</strong>.
+            Use the sections below to validate synthetic output against your <strong>working original</strong>. Open a section to
+            see details; collapse any block when you want a shorter page.
           </p>
 
-          <details class="review-section" open>
+          <details class="review-section">
             <summary class="review-section-summary">
               <span class="review-section-chevron" aria-hidden="true"></span>
               <span class="review-section-heading">
@@ -535,7 +581,7 @@
             </div>
           </details>
 
-          <details class="review-section review-section--assistant" open>
+          <details class="review-section review-section--assistant">
             <summary class="review-section-summary">
               <span class="review-section-chevron" aria-hidden="true"></span>
               <span class="review-section-heading review-section-heading--inline-icon">
@@ -548,7 +594,7 @@
                   </svg>
                 </span>
                 <span class="review-section-heading-text">
-                  <span class="review-section-title">Dataset-specific review assistant</span>
+                  <span class="review-section-title">Synthetic Data Review Assistant</span>
                   <span class="review-section-meta">Optional OpenAI — summaries &amp; small samples only</span>
                 </span>
               </span>
@@ -564,7 +610,7 @@
                   </svg>
                 </div>
                 <div class="agent-banner-main">
-                  <h3>Dataset-specific review assistant</h3>
+                  <h3>Synthetic Data Review Assistant</h3>
                   <p class="panel-lead review-ai-intro">
                     Sends your fidelity summary, compact numeric and correlation deltas, category headlines, the synthetic goal, and small row samples — not full tables. Avoid regulated identifiers in samples if your environment is not approved for model providers.
                   </p>
@@ -577,7 +623,7 @@
             </div>
           </details>
 
-          <details class="review-section" open>
+          <details class="review-section">
             <summary class="review-section-summary">
               <span class="review-section-chevron" aria-hidden="true"></span>
               <span class="review-section-heading">
@@ -591,7 +637,7 @@
             </div>
           </details>
 
-          <details class="review-section" open>
+          <details class="review-section">
             <summary class="review-section-summary">
               <span class="review-section-chevron" aria-hidden="true"></span>
               <span class="review-section-heading">
@@ -609,7 +655,7 @@
             </div>
           </details>
 
-          <details class="review-section" open>
+          <details class="review-section">
             <summary class="review-section-summary">
               <span class="review-section-chevron" aria-hidden="true"></span>
               <span class="review-section-heading">
@@ -625,7 +671,7 @@
             </div>
           </details>
 
-          <details class="review-section" open>
+          <details class="review-section">
             <summary class="review-section-summary">
               <span class="review-section-chevron" aria-hidden="true"></span>
               <span class="review-section-heading">
@@ -641,7 +687,7 @@
             </div>
           </details>
 
-          <details class="review-section" open>
+          <details class="review-section">
             <summary class="review-section-summary">
               <span class="review-section-chevron" aria-hidden="true"></span>
               <span class="review-section-heading">

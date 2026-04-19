@@ -295,7 +295,7 @@ def _normalize_ai_synth_row(row: object, headers: list[str]) -> dict[str, str]:
     return out
 
 
-app = FastAPI(title="Southlake Synthetic Data Studio API")
+app = FastAPI(title="Synthetix API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -526,7 +526,7 @@ async def metadata_suggest(body: MetadataSuggestRequest):
 
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-    system = """You are the **AI Metadata Agent** for Synthetic Data Studio. You speak directly to customers and analysts who are shaping metadata so the system can generate **high-quality synthetic data** that reflects their real dataset.
+    system = """You are the **AI Metadata Agent** for Synthetix. You speak directly to customers and analysts who are shaping metadata so the system can generate **high-quality synthetic data** that reflects their real dataset.
 
 You receive (as JSON): dataset shape, per-column profile stats, a small row sample, hygiene notes from an earlier quality pass, and **schema_context** (columns excluded from synthesis, user edits to labels/types/notes, synthetic distribution hints, and correlation targets).
 

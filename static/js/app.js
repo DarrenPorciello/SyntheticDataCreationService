@@ -223,6 +223,7 @@
     els.btnContinue = $("btn-continue");
     els.sessionNameInput = $("session-name");
     els.sessionContextTitle = $("session-context-title");
+    els.appHeader = $("app-header");
     els.btnReupload = $("btn-reupload");
     els.viewUpload = $("view-upload");
     els.viewInspect = $("view-inspect");
@@ -382,12 +383,22 @@
   }
 
   function renderSessionTitle() {
+    const onCreate = currentAppScreen === "create";
     if (els.sessionContextTitle) {
-      const name = getSessionDisplayTitle();
-      els.sessionContextTitle.innerHTML = `<span class="session-context-label">Session</span><span class="session-context-name">${escapeHtml(name)}</span>`;
+      if (onCreate) {
+        const name = getSessionDisplayTitle();
+        els.sessionContextTitle.innerHTML = `<span class="session-context-label">Session</span><span class="session-context-name">${escapeHtml(name)}</span>`;
+        els.sessionContextTitle.classList.remove("hidden");
+        els.sessionContextTitle.setAttribute("aria-hidden", "false");
+      } else {
+        els.sessionContextTitle.innerHTML = "";
+        els.sessionContextTitle.classList.add("hidden");
+        els.sessionContextTitle.setAttribute("aria-hidden", "true");
+      }
     }
     const raw = (state.sessionName || "").trim().slice(0, SESSION_NAME_MAX_LEN).replace(/[\u0000-\u001F<>]/g, "");
-    document.title = raw ? `${raw} — Synthetic Data Studio` : "Synthetic Data Studio — Southlake workflow";
+    if (onCreate && raw) document.title = `${raw} — Synthetix`;
+    else document.title = "Synthetix";
   }
 
   function syncSessionNameInput() {
@@ -669,12 +680,14 @@
 
   function showAppScreen(screen) {
     currentAppScreen = screen;
+    if (els.appHeader) els.appHeader.classList.toggle("app-header--create", screen === "create");
     if (els.screenHome) els.screenHome.classList.toggle("hidden", screen !== "home");
     if (els.screenCreate) els.screenCreate.classList.toggle("hidden", screen !== "create");
     if (els.screenLibrary) els.screenLibrary.classList.toggle("hidden", screen !== "library");
     if (els.screenEducation) els.screenEducation.classList.toggle("hidden", screen !== "education");
     if (els.appHeaderWorkflow) els.appHeaderWorkflow.classList.toggle("hidden", screen !== "create");
     setSiteNavActive(screen);
+    renderSessionTitle();
   }
 
   function enterStudio() {
@@ -2738,7 +2751,7 @@
 
     let reviewAiBlock = "";
     if (els.reviewAiCheckBody && els.reviewAiCheckBody.innerHTML.trim()) {
-      reviewAiBlock = `<section class="session-report-block"><h2 class="session-report-h2">10. Dataset-specific review assistant (last output in this tab)</h2><div class="session-report-embed">${els.reviewAiCheckBody.innerHTML}</div></section>`;
+      reviewAiBlock = `<section class="session-report-block"><h2 class="session-report-h2">10. Synthetic Data Review Assistant (last output in this tab)</h2><div class="session-report-embed">${els.reviewAiCheckBody.innerHTML}</div></section>`;
     }
 
     const metaChanges = buildMetadataChangesReviewHtml(pkg, colStats, { printMode: true, skipTopBanner: true });
@@ -2767,7 +2780,7 @@
     const sessionTitleEsc = escapeHtml(getSessionDisplayTitle());
     return `<div class="session-report-doc session-report-doc--professional">
       <header class="session-report-hero">
-        <p class="session-report-kicker">Synthetic Data Studio</p>
+        <p class="session-report-kicker">Synthetix</p>
         <h1 class="session-report-title">${sessionTitleEsc}</h1>
         <p class="session-report-subtitle">Comprehensive session report</p>
         <dl class="session-report-meta-grid">
@@ -4806,7 +4819,7 @@
     const printBanner = skipTopBanner
       ? ""
       : `<div class="meta-changes-print-banner report-print-banner">
-      <p class="report-print-kicker">Synthetic Data Studio</p>
+      <p class="report-print-kicker">Synthetix</p>
       <h1 class="meta-changes-print-title report-print-session-title">${sessionTitle}</h1>
       <p class="report-print-doc-type">Metadata change report</p>
       <p class="meta-changes-print-meta report-print-meta-line">${escapeHtml(state.fileName || "dataset.csv")} · ${escapeHtml(new Date().toLocaleString())}</p>
