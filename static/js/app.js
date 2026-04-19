@@ -20,14 +20,14 @@
     dashboard: "Dashboard",
     ai: "AI Metadata Agent",
     summary: "Summary",
-    hygiene: "Hygiene context",
+    hygiene: "Inspection hygiene",
     columns: "Columns",
     correlations: "Numeric correlations",
     distributions: "Distributions",
     json: "Technical JSON export",
   };
 
-  const METADATA_SCHEMA_VERSION = "1.6";
+  const METADATA_SCHEMA_VERSION = "1.8";
 
   /** Max distinct category levels kept for synthetic marginals (tail → one “Other” bucket). */
   const MAX_SYNTH_CATEGORICAL_LEVELS = 200;
@@ -89,6 +89,8 @@
     metadataAiLastRun: null,
     /** Accepted coach recommendations persisted for synthesis + change summary */
     metadataAiAccepted: [],
+    /** Accepted inspection hygiene AI suggested fixes (metadata change review). */
+    inspectionHygieneAccepted: [],
     /** Raw CSV text as first uploaded in this session (for comparison / provenance). */
     originalCsvText: "",
     /** User intent text for the synthetic run */
@@ -443,6 +445,7 @@
         state.metadataChangeReviewNotes && typeof state.metadataChangeReviewNotes === "object" ? state.metadataChangeReviewNotes : {},
       metadataAiLastRun: state.metadataAiLastRun && typeof state.metadataAiLastRun === "object" ? state.metadataAiLastRun : null,
       metadataAiAccepted: Array.isArray(state.metadataAiAccepted) ? state.metadataAiAccepted : [],
+      inspectionHygieneAccepted: Array.isArray(state.inspectionHygieneAccepted) ? state.inspectionHygieneAccepted : [],
       originalCsvText: state.originalCsvText || "",
       syntheticGoal: state.syntheticGoal || "",
       syntheticRowCount:
@@ -488,6 +491,17 @@
           }
         : null;
     state.metadataAiAccepted = Array.isArray(o.metadataAiAccepted) ? o.metadataAiAccepted : [];
+    state.inspectionHygieneAccepted = Array.isArray(o.inspectionHygieneAccepted)
+      ? o.inspectionHygieneAccepted
+          .filter((x) => x && typeof x === "object" && typeof x.id === "string" && (x.suggestedFix || x.suggested_fix))
+          .map((x) => ({
+            id: String(x.id).slice(0, 120),
+            title: String(x.title || "").slice(0, 300),
+            detail: String(x.detail || "").slice(0, 1200),
+            suggestedFix: String(x.suggestedFix || x.suggested_fix || "").trim().slice(0, 900),
+            accepted_at_utc: typeof x.accepted_at_utc === "string" ? x.accepted_at_utc : new Date().toISOString(),
+          }))
+      : [];
     state.originalCsvText = typeof o.originalCsvText === "string" ? o.originalCsvText : "";
     state.syntheticGoal = typeof o.syntheticGoal === "string" ? o.syntheticGoal : "";
     state.syntheticRowCount =
@@ -553,6 +567,7 @@
     state.librarySavedAt = null;
     state.archiveId = nextId;
     resetMetadataAiCoachState();
+    state.inspectionHygieneAccepted = [];
     persistCurrentArchivePointer();
     saveSession();
     if (els.fileMeta) els.fileMeta.classList.remove("is-visible");
@@ -1896,6 +1911,7 @@
         severity: i.sev,
         title: i.title,
         detail: i.detail,
+        suggested_fix: i.suggestedFix && String(i.suggestedFix).trim() ? String(i.suggestedFix).slice(0, 900) : undefined,
       })),
       columns,
       numeric_correlation_pearson,
@@ -1919,6 +1935,17 @@
           suggested_action: rec.suggested_action ? String(rec.suggested_action).slice(0, 400) : undefined,
           related_columns: Array.isArray(rec.related_columns) ? rec.related_columns.filter((c) => headers.includes(c)) : [],
           agent_summary_snapshot: rec.agent_summary_snapshot ? String(rec.agent_summary_snapshot).slice(0, 500) : undefined,
+        }));
+      })(),
+      accepted_inspection_hygiene_fixes: (() => {
+        const acc = state.inspectionHygieneAccepted;
+        if (!Array.isArray(acc) || !acc.length) return undefined;
+        return acc.map((r) => ({
+          id: r.id,
+          accepted_at_utc: r.accepted_at_utc,
+          title: String(r.title || "").slice(0, 300),
+          detail: String(r.detail || "").slice(0, 1200),
+          suggested_fix: String(r.suggestedFix || "").slice(0, 900),
         }));
       })(),
       transparency: {
@@ -3493,7 +3520,7 @@
     if (sectionId === "dashboard") return anySynth;
     if (sectionId === "ai") return aiCoach;
     if (sectionId === "summary") return incExc || colEd;
-    if (sectionId === "hygiene") return false;
+    if (sectionId === "hygiene") return hasAcceptedInspectionHygieneGuidance();
     if (sectionId === "columns") return incExc || colEd;
     if (sectionId === "correlations") return corr;
     if (sectionId === "distributions") return hasDistributionSectionOverrides();
@@ -3520,7 +3547,7 @@
     if (sectionId === "dashboard") return anySynth;
     if (sectionId === "ai") return hasAcceptedAiMetadataGuidance();
     if (sectionId === "summary") return incExc || colEd;
-    if (sectionId === "hygiene") return false;
+    if (sectionId === "hygiene") return hasAcceptedInspectionHygieneGuidance();
     if (sectionId === "columns") return names.length > 0;
     if (sectionId === "correlations") return corr;
     if (sectionId === "distributions") return hasDistributionSectionOverrides();
@@ -4782,6 +4809,35 @@
     return `<p class="panel-lead">These coach tips are included in your synthesis metadata until you remove them. Column-scoped items also appear under <strong>Columns</strong>.</p>${blocks}`;
   }
 
+  function buildInspectionHygieneChangeReviewBody(options) {
+    const opt = options && typeof options === "object" ? options : {};
+    const printMode = opt.printMode === true;
+    const acc = state.inspectionHygieneAccepted || [];
+    if (!acc.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">No accepted inspection hygiene fixes.</p>`;
+    }
+    const blocks = acc
+      .map((rec) => {
+        const fix = String(rec.suggestedFix || "").trim();
+        const fixHtml = fix ? `<p class="meta-changes-hygiene-fix">${escapeHtml(fix)}</p>` : "";
+        const when = rec.accepted_at_utc
+          ? escapeHtml(new Date(rec.accepted_at_utc).toLocaleString())
+          : "\u2014";
+        const revertRow = printMode
+          ? ""
+          : `<div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-hygiene-id="${escapeAttr(rec.id)}">Undo accept</button></div>`;
+        return `<div class="meta-changes-col-block meta-changes-hygiene-rec">
+          <h4 class="meta-changes-col-title">${escapeHtml(String(rec.title || "Finding"))}</h4>
+          <p class="panel-lead meta-changes-lead-tight">${escapeHtml(String(rec.detail || ""))}</p>
+          ${fixHtml}
+          <p class="meta-changes-ai-meta">Accepted ${when}</p>
+          ${revertRow}
+        </div>`;
+      })
+      .join("");
+    return `<p class="panel-lead">These fixes are recorded in your synthesis metadata until you remove them.</p>${blocks}`;
+  }
+
   function buildMetadataChangesReviewHtml(pkg, colStats, options) {
     const opt = options && typeof options === "object" ? options : {};
     const printMode = opt.printMode === true;
@@ -4802,6 +4858,8 @@
         body = `<p class="panel-lead meta-changes-lead-tight">Synthetic numeric, categorical, or correlation targets were customized from profiling defaults. Column- and pair-level detail appears under <strong>Columns</strong> and <strong>Correlations</strong>.</p>`;
       } else if (sid === "ai") {
         body = buildAiCoachChangeReviewBody(opt);
+      } else if (sid === "hygiene") {
+        body = buildInspectionHygieneChangeReviewBody(opt);
       } else if (sid === "summary") {
         body = `<p class="panel-lead meta-changes-lead-tight">Summary figures on the metadata screen reflect your current include/exclude choices and column metadata edits.</p>`;
       } else if (sid === "distributions") {
@@ -4814,7 +4872,7 @@
 
     if (!anySection) {
       inner.push(
-        `<div class="panel meta-changes-block"><p class="panel-lead meta-changes-lead-tight">No manual overrides are recorded yet. When you exclude columns, edit field metadata, adjust synthetic targets, change correlation targets, or accept AI Metadata Agent recommendations, only the relevant sections will appear here.</p></div>`
+        `<div class="panel meta-changes-block"><p class="panel-lead meta-changes-lead-tight">No manual overrides are recorded yet. When you exclude columns, edit field metadata, adjust synthetic targets, change correlation targets, accept AI Metadata Agent recommendations, or accept suggested fixes from data inspection hygiene findings, only the relevant sections will appear here.</p></div>`
       );
     } else if (printMode) {
       const rawJson = JSON.stringify(pkg, null, 2);
@@ -4847,6 +4905,49 @@
   function sevClass(sev) {
     if (sev === "high" || sev === "medium" || sev === "low") return sev;
     return "low";
+  }
+
+  function hygieneIssueContentHash(title, detail) {
+    const base = `${String(title || "")}\0${String(detail || "")}`;
+    let h = 5381;
+    for (let j = 0; j < base.length; j++) h = ((h << 5) + h) ^ base.charCodeAt(j);
+    return (h >>> 0).toString(36);
+  }
+
+  function attachHygieneIssueIds(issues) {
+    const list = Array.isArray(issues) ? issues : [];
+    const counts = new Map();
+    return list.map((i) => {
+      const stem = `hyg-${hygieneIssueContentHash(i.title, i.detail)}`;
+      const n = (counts.get(stem) || 0) + 1;
+      counts.set(stem, n);
+      const id = n === 1 ? stem : `${stem}-${n}`;
+      return { ...i, id };
+    });
+  }
+
+  function pruneInspectionHygieneAcceptedToIssues(issues) {
+    const idSet = new Set((issues || []).map((x) => (x && x.id ? x.id : null)).filter(Boolean));
+    state.inspectionHygieneAccepted = (state.inspectionHygieneAccepted || []).filter((a) => idSet.has(a.id));
+  }
+
+  function hasAcceptedInspectionHygieneGuidance() {
+    return Array.isArray(state.inspectionHygieneAccepted) && state.inspectionHygieneAccepted.length > 0;
+  }
+
+  /** Returns true if an acceptance was removed. */
+  function revertInspectionHygieneAcceptanceById(id) {
+    if (!id) return false;
+    const list = state.inspectionHygieneAccepted || [];
+    const next = list.filter((x) => x.id !== id);
+    if (next.length === list.length) return false;
+    state.inspectionHygieneAccepted = next;
+    saveSession();
+    if (state.step === 1) renderIssueList();
+    if (state.step === 2 && state.metadataPane === "changesReview") renderMetadataChangesReview();
+    updateMetadataSectionNotesVisibility();
+    if (state.step === 2 && state.metadataPane === "editor") renderMetadata();
+    return true;
   }
 
   function buildColumnStatsPayload(colStats) {
@@ -4908,6 +5009,7 @@
         sev: i.sev,
         title: i.title,
         detail: i.detail,
+        suggested_fix: i.suggestedFix && String(i.suggestedFix).trim() ? String(i.suggestedFix).slice(0, 900) : undefined,
       })),
       schema_context: {
         columns_excluded_from_schema: state.headers.filter((h) => inc[h] === false),
@@ -5141,13 +5243,23 @@
   }
 
   function renderIssueList() {
-    els.issueList.innerHTML = state.issues
-      .map(
-        (i) => `<li class="issue-item">
+    const accepted = new Set((state.inspectionHygieneAccepted || []).map((a) => a.id));
+    els.issueList.innerHTML = (state.issues || [])
+      .map((i) => {
+        const fix = String(i.suggestedFix || "").trim();
+        const hasFix = fix.length > 0;
+        const isAcc = i.id && accepted.has(i.id);
+        const fixBlock = hasFix ? `<div class="issue-suggested-fix"><p>${escapeHtml(fix)}</p></div>` : "";
+        const actions = hasFix
+          ? isAcc
+            ? `<div class="issue-hygiene-actions"><span class="issue-accepted-pill">Accepted — also under Metadata → Review metadata changes</span><button type="button" class="btn btn-ghost btn-sm issue-hygiene-undo" data-revert-hygiene-id="${escapeAttr(i.id)}">Undo accept</button></div>`
+            : `<div class="issue-hygiene-actions"><button type="button" class="btn btn-secondary btn-sm" data-accept-hygiene-id="${escapeAttr(i.id)}">Accept fix</button></div>`
+          : "";
+        return `<li class="issue-item${isAcc ? " is-hygiene-accepted" : ""}">
         <span class="issue-severity ${sevClass(i.sev)}">${escapeHtml(i.sev)}</span>
-        <div class="issue-body"><strong>${escapeHtml(i.title)}</strong><span>${escapeHtml(i.detail)}</span></div>
-      </li>`
-      )
+        <div class="issue-body issue-body--hygiene"><strong>${escapeHtml(i.title)}</strong><span>${escapeHtml(i.detail)}</span>${fixBlock}${actions}</div>
+      </li>`;
+      })
       .join("");
   }
 
@@ -5303,6 +5415,7 @@
     state.metadataSectionNotes = {};
     state.metadataChangeReviewNotes = {};
     resetMetadataAiCoachState();
+    state.inspectionHygieneAccepted = [];
     updateHomeDraftHint();
   }
 
@@ -5382,12 +5495,14 @@
         throw new Error(msg || `Request failed (${res.status})`);
       }
       els.agentSummary.textContent = raw.summary || "Assessment complete.";
-      state.issues = (raw.issues || []).map((i) => ({
+      const fromApi = (raw.issues || []).map((i) => ({
         sev: sevClass(i.sev),
         title: String(i.title || "Finding"),
         detail: String(i.detail || ""),
+        suggestedFix: String(i.suggested_fix || i.suggestedFix || "").trim().slice(0, 900),
       }));
-      if (!state.issues.length) state.issues = ruleIssues;
+      state.issues = attachHygieneIssueIds(fromApi.length ? fromApi : ruleIssues);
+      pruneInspectionHygieneAcceptedToIssues(state.issues);
       renderIssueList();
       if (els.agentPrivacyNote) els.agentPrivacyNote.classList.remove("hidden");
       if (els.btnRetryAi) els.btnRetryAi.classList.add("hidden");
@@ -5402,7 +5517,8 @@
           " You are hitting Python's static file server (e.g. python -m http.server), which does not allow POST. Stop it and run python server.py instead, then reload this page from that address.";
       }
       els.agentSummary.textContent = `Could not reach the AI API (${reason}).${hint}`;
-      state.issues = ruleIssues;
+      state.issues = attachHygieneIssueIds(ruleIssues);
+      pruneInspectionHygieneAcceptedToIssues(state.issues);
       renderIssueList();
       if (els.btnRetryAi) els.btnRetryAi.classList.remove("hidden");
     } finally {
@@ -5627,6 +5743,7 @@
       fields: state.headers,
       data: rows.map((r) => state.headers.map((h) => r[h] ?? "")),
     });
+    state.inspectionHygieneAccepted = [];
     saveSession();
     toast("Fixes applied. Dataset updated for this session.");
     renderInspect();
@@ -5663,6 +5780,39 @@
       setStep(1);
     });
 
+    if (els.viewInspect) {
+      els.viewInspect.addEventListener("click", (e) => {
+        const undo = e.target.closest("[data-revert-hygiene-id]");
+        if (undo) {
+          const rid = undo.getAttribute("data-revert-hygiene-id");
+          if (revertInspectionHygieneAcceptanceById(rid)) toast("Acceptance removed. This finding is no longer in synthesis metadata.");
+          return;
+        }
+        const btn = e.target.closest("[data-accept-hygiene-id]");
+        if (!btn) return;
+        const id = btn.getAttribute("data-accept-hygiene-id");
+        if (!id) return;
+        const issue = (state.issues || []).find((x) => x.id === id);
+        if (!issue) return;
+        const suggestedFix = String(issue.suggestedFix || "").trim();
+        if (!suggestedFix) return;
+        if (!state.inspectionHygieneAccepted) state.inspectionHygieneAccepted = [];
+        if (state.inspectionHygieneAccepted.some((x) => x.id === id)) return;
+        state.inspectionHygieneAccepted.push({
+          id,
+          title: String(issue.title || "").slice(0, 300),
+          detail: String(issue.detail || "").slice(0, 1200),
+          suggestedFix: suggestedFix.slice(0, 900),
+          accepted_at_utc: new Date().toISOString(),
+        });
+        saveSession();
+        renderIssueList();
+        if (state.step === 2 && state.metadataPane === "changesReview") renderMetadataChangesReview();
+        updateMetadataSectionNotesVisibility();
+        toast("Saved for this session. See Metadata → Review metadata changes.");
+      });
+    }
+
     if (els.sessionNameInput) {
       els.sessionNameInput.addEventListener("input", () => {
         state.sessionName = String(els.sessionNameInput.value || "").slice(0, SESSION_NAME_MAX_LEN);
@@ -5698,6 +5848,7 @@
       state.librarySavedAt = null;
       state.step = 0;
       resetMetadataAiCoachState();
+      state.inspectionHygieneAccepted = [];
       state.issues = [];
       els.fileMeta.classList.remove("is-visible");
       els.btnContinue.disabled = true;
@@ -5749,13 +5900,22 @@
 
     if (els.viewMetadataReview) {
       els.viewMetadataReview.addEventListener("click", (e) => {
-        const btn = e.target.closest("[data-revert],[data-revert-column],[data-revert-corr-a],[data-revert-ai-id]");
+        const btn = e.target.closest(
+          "[data-revert],[data-revert-column],[data-revert-corr-a],[data-revert-ai-id],[data-revert-hygiene-id]"
+        );
         if (!btn) return;
         const col = btn.getAttribute("data-revert-column");
         const ca = btn.getAttribute("data-revert-corr-a");
         const cb = btn.getAttribute("data-revert-corr-b");
         const rv = btn.getAttribute("data-revert");
+        const hygieneId = btn.getAttribute("data-revert-hygiene-id");
         const aiId = btn.getAttribute("data-revert-ai-id");
+        if (hygieneId) {
+          if (revertInspectionHygieneAcceptanceById(hygieneId)) {
+            toast("Inspection hygiene acceptance removed from synthesis metadata.");
+          }
+          return;
+        }
         if (aiId) {
           if (!state.metadataAiAccepted) state.metadataAiAccepted = [];
           state.metadataAiAccepted = state.metadataAiAccepted.filter((x) => x.id !== aiId);

@@ -170,6 +170,7 @@ class IssueOut(BaseModel):
     sev: str
     title: str
     detail: str
+    suggested_fix: str = ""
 
 
 class QualityAnalyzeResponse(BaseModel):
@@ -350,7 +351,8 @@ def _normalize_issues(raw: list) -> list[IssueOut]:
             sev = "low"
         title = str(item.get("title", "")).strip() or "Finding"
         detail = str(item.get("detail", "")).strip() or "—"
-        out.append(IssueOut(sev=sev, title=title[:200], detail=detail[:1200]))
+        sf = str(item.get("suggested_fix", "")).strip()
+        out.append(IssueOut(sev=sev, title=title[:200], detail=detail[:1200], suggested_fix=sf[:900]))
     return out
 
 
@@ -408,10 +410,13 @@ You receive: file metadata, per-column counts/types, a small sample of rows, and
 
 Your job:
 1. Write a concise executive summary (2–4 sentences) for a non-technical stakeholder about data hygiene and synthetic-data readiness.
-2. Produce a prioritized list of hygiene / quality issues. You may rephrase, merge, or refine deterministic_findings, add important issues the code missed, and drop clear false positives. Use severity: high, medium, or low.
+2. Produce a prioritized list of hygiene / quality issues. The **issues** array MUST contain **at least 1** item—even if the data look clean (use a single low-severity synthetic-readiness or documentation nudge). You may rephrase, merge, or refine deterministic_findings, add important issues the code missed, and drop clear false positives. Use severity: high, medium, or low.
+3. For EACH issue, add "suggested_fix": 1–3 short sentences stating plainly what the system does **for this dataset** when the user saves that fix into the session (e.g. "Adds this remediation to synthesis metadata so synthetic data and reports follow it.", "Documents that row-level cleanup should use Apply fixes (trim / dedupe) and carries that intent in the session package."). Write as direct facts—no "if you accept" or "when you click Accept" framing. Be accurate: saving persists guidance in metadata; it does not silently rewrite their CSV unless they use separate fix actions. Use an empty string only if no reasonable system-side outcome exists.
 
 Respond with ONLY valid JSON matching this shape (no markdown fences):
-{"summary": string, "issues": [{"sev": "high"|"medium"|"low", "title": string, "detail": string}]}
+{"summary": string, "issues": [{"sev": "high"|"medium"|"low", "title": string, "detail": string, "suggested_fix": string}]}
+
+**issues** must be a non-empty array (minimum length 1).
 
 If sample data might resemble real people, avoid repeating exact identifiers in titles; refer to column names instead where possible."""
 
@@ -448,8 +453,18 @@ If sample data might resemble real people, avoid repeating exact identifiers in 
                 sev="low",
                 title="No structured issues returned",
                 detail="The model did not return issue items; review the summary and raw data manually.",
+                suggested_fix="Adds a placeholder hygiene note to this session’s synthesis metadata so the run is still documented when the model returns no items.",
             )
         ]
+    _hygiene_fix_fallback = (
+        "Adds this hygiene note to synthesis metadata for this dataset so synthetic generation and change reports stay aligned with the finding."
+    )
+    issues = [
+        i.model_copy(
+            update={"suggested_fix": ((i.suggested_fix or "").strip() or _hygiene_fix_fallback)[:900]}
+        )
+        for i in issues
+    ]
 
     return QualityAnalyzeResponse(summary=summary[:4000], issues=issues)
 
@@ -535,7 +550,7 @@ Respond with ONLY valid JSON (no markdown, no code fences):
 
 **summary** — One or two short sentences in plain, confident language: what stands out about their metadata and how ready it looks for synthetic generation. No jargon about systems or infrastructure.
 
-**suggestions** — Between **0 and 4** objects. Only include changes that would **meaningfully improve synthetic output** given this data (e.g. include/exclude decisions, clearer labels or type intent, synthesis notes, realistic numeric/category targets, correlation targets, handling identifiers or skewed fields). Skip low-impact or speculative tips. If metadata already fits the data well, return **[]**.
+**suggestions** — Between **1 and 4** objects (never an empty array). Always return **at least one** tip, even if it is minimal or low impact (e.g. confirm types, add a short synthesis note, sanity-check an identifier column, or acknowledge the profile looks good with one small refinement). Prefer higher-impact items first when they exist.
 
 Each suggestion object:
 {"title": string, "detail": string, "importance": "high"|"medium"|"low", "related_columns": string[], "suggested_action": string}
@@ -575,6 +590,21 @@ Rules: Never invent column names. Avoid repeating the same idea twice. Do not me
 
     summary = str(data.get("summary", "")).strip() or "Here is a quick read on your metadata for synthetic data."
     suggestions = _normalize_metadata_suggestions(data.get("suggestions", []))
+    if not suggestions:
+        related: list[str] = []
+        if stats:
+            n0 = str(stats[0].name).strip()
+            if n0 and (not headers or n0 in headers):
+                related = [n0[:120]]
+        suggestions = [
+            MetadataSuggestionItemOut(
+                title="Light-touch metadata check",
+                detail="No stronger automated tips came back from this run; a quick scan of types and short field notes still tightens synthetic fidelity.",
+                importance="low",
+                related_columns=related[:1],
+                suggested_action="Open the Columns accordion and confirm each included field matches the clinical or operational meaning you want in synthetic data.",
+            )
+        ]
 
     return MetadataSuggestResponse(summary=summary[:1200], suggestions=suggestions)
 
