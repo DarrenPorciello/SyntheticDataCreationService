@@ -338,6 +338,23 @@
     els.btnHomeStartNew = $("btn-home-start-new");
     els.btnHomeOpenLibrary = $("btn-home-open-library");
     els.btnHomeContinue = $("btn-home-continue");
+    els.synthetixWorkflowLoader = $("synthetix-workflow-loader");
+    els.synthetixWorkflowLoaderImg = $("synthetix-workflow-loader-img");
+  }
+
+  /** Fixed corner mark: double 360° + scale “learning” pulse when workflow step changes on Create. */
+  function playWorkflowLoaderAnimation() {
+    if (!els.synthetixWorkflowLoaderImg) return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const img = els.synthetixWorkflowLoaderImg;
+    img.classList.remove("synthetix-workflow-loader-img--playing");
+    void img.offsetWidth;
+    img.classList.add("synthetix-workflow-loader-img--playing");
+    const done = () => {
+      img.removeEventListener("animationend", done);
+      img.classList.remove("synthetix-workflow-loader-img--playing");
+    };
+    img.addEventListener("animationend", done, { once: true });
   }
 
   function toast(msg) {
@@ -5256,6 +5273,9 @@
       window.requestAnimationFrame(() => {
         window.scrollTo({ top: 0, behavior: "smooth" });
       });
+      if (currentAppScreen === "create") {
+        playWorkflowLoaderAnimation();
+      }
     }
   }
 

@@ -3498,3 +3498,72 @@ details.review-section > .review-section-summary::marker {
 .education-list li {
   margin-bottom: 0.5rem;
 }
+
+/* —— Fixed workflow “AI learning” mark (Create step transitions) —— */
+.synthetix-workflow-loader {
+  position: fixed;
+  left: 1.15rem;
+  bottom: 1.15rem;
+  z-index: 90;
+  pointer-events: none;
+}
+
+.synthetix-workflow-loader-ring {
+  width: 3.35rem;
+  height: 3.35rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: linear-gradient(160deg, #ffffff 0%, #f0f9ff 55%, #e0f2fe 100%);
+  border: 1px solid rgba(14, 165, 233, 0.28);
+  box-shadow:
+    0 6px 22px rgba(15, 23, 42, 0.1),
+    0 0 0 1px rgba(255, 255, 255, 0.85) inset;
+}
+
+.synthetix-workflow-loader-img {
+  width: 2.4rem;
+  height: 2.4rem;
+  object-fit: contain;
+  display: block;
+  transform-origin: 50% 50%;
+}
+
+.synthetix-workflow-loader-img--playing {
+  animation: synthetix-ai-learn 2.85s cubic-bezier(0.42, 0, 0.2, 1) forwards;
+}
+
+@keyframes synthetix-ai-learn {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  21% {
+    transform: rotate(180deg) scale(1.18);
+  }
+  42% {
+    transform: rotate(360deg) scale(1);
+  }
+  52% {
+    transform: rotate(360deg) scale(1);
+  }
+  73% {
+    transform: rotate(540deg) scale(1.18);
+  }
+  100% {
+    transform: rotate(720deg) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .synthetix-workflow-loader-img--playing {
+    animation: none;
+  }
+}
+
+@media print {
+  .synthetix-workflow-loader {
+    display: none !important;
+  }
+}
