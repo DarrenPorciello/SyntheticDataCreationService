@@ -37,8 +37,9 @@
         <div class="panel">
           <h2 class="panel-title" id="upload-heading">Upload data set</h2>
           <p class="panel-lead">
-            Upload a comma-separated file. Your file is kept in this browser session for inspection and later
-            synthetic-data steps — nothing is sent to a server in this prototype.
+            Upload a comma-separated file. The <strong>original CSV text</strong> is kept in this browser session for
+            inspection, metadata, and comparison with synthetic output. Optional AI calls use small samples only;
+            synthetic generation runs locally from your metadata package.
           </p>
           <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Upload CSV file">
             <div class="dropzone-icon" aria-hidden="true">
@@ -154,9 +155,9 @@
           <div class="meta-section-body">
             <p class="panel-lead">
               Your CSV is summarized into <strong>descriptive metadata</strong> (statistics and structure — not a copy of
-              every cell). The cards below are what a synthetic generator would use to match shape and marginals. Use
-              <strong>Edit metadata</strong> on any column to adjust labels, how the field should be treated, or notes
-              for the synthesis step.
+              every cell). The export includes <strong>full-table marginals</strong> for synthesis (numeric histograms and
+              category proportions from every row in the working table). Use <strong>Edit metadata</strong> on any column
+              to adjust labels, how the field should be treated, or overrides for the synthesis step.
             </p>
             <ol class="metadata-flow">
               <li><strong>Parse</strong> — Read headers and cell values from your session.</li>
@@ -419,10 +420,28 @@
       <section id="view-synthetic" class="hidden" aria-labelledby="synthetic-heading">
         <div class="panel">
           <h2 class="panel-title" id="synthetic-heading">Synthetic data generation</h2>
-          <p class="panel-lead">
-            Generation from the metadata package is not wired in this build. When implemented, this step will call the
-            generator with the JSON from the metadata screen and stream or download a synthetic CSV.
+          <p class="panel-lead" id="synthetic-original-lead">
+            The <strong>original uploaded CSV</strong> is kept in this browser session for comparison and as the profiling
+            source. By default, generation matches the metadata built from the <strong>full working table</strong>
+            (marginals, missingness). Distribution sliders, manual targets, and accepted AI coach tips override that where
+            you set them. Joint numeric correlation structure is not fully simulated yet.
           </p>
+          <div class="synthetic-gen-panel">
+            <div class="modal-field">
+              <label for="synthetic-goal">Goal for the synthetic dataset</label>
+              <textarea id="synthetic-goal" class="modal-textarea" rows="4" placeholder="e.g. Stress-test billing codes under a balanced severity mix for training, without real PHI."></textarea>
+            </div>
+            <div class="modal-field synthetic-row-count-field">
+              <label for="synthetic-row-count">Number of rows to generate</label>
+              <input type="number" id="synthetic-row-count" class="modal-input" min="1" max="100000" step="1" value="5000" />
+            </div>
+            <div class="synthetic-gen-actions no-print">
+              <button type="button" class="btn btn-primary" id="btn-generate-synthetic">Generate synthetic dataset</button>
+              <button type="button" class="btn btn-secondary hidden" id="btn-download-synthetic">Download synthetic CSV</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-download-original-csv">Download original CSV</button>
+            </div>
+            <p class="synthetic-gen-status" id="synthetic-gen-status" role="status" aria-live="polite"></p>
+          </div>
         </div>
         <div class="actions">
           <button type="button" class="btn btn-ghost" id="btn-back-to-metadata">Back to metadata</button>
@@ -432,11 +451,21 @@
 
       <section id="view-review" class="hidden" aria-labelledby="review-heading">
         <div class="panel">
-          <h2 class="panel-title" id="review-heading">Review</h2>
+          <h2 class="panel-title" id="review-heading">Review synthetic output</h2>
           <p class="panel-lead">
-            Fidelity checks and comparison views will live here (synthetic vs metadata targets). Placeholder for the
-            Southlake challenge deliverable.
+            Dashboard for the generated dataset and a side-by-side view of key properties versus your <strong>original</strong>
+            upload (current working table in the session).
           </p>
+          <div id="review-dashboard-root" class="review-dashboard-root" aria-live="polite"></div>
+          <h3 class="review-subtitle">Distributions — original vs synthetic</h3>
+          <p class="panel-lead review-dist-intro">
+            Same palette as <strong>Data inspection</strong> (light blue vs light red). Bars show <strong>each dataset’s own
+            proportions</strong> (shares of rows within that set, so totals differ but shapes are comparable). Overlapping bars
+            read as purple where both are strong.
+          </p>
+          <div id="review-distributions-root" class="review-distributions-root" aria-live="polite"></div>
+          <h3 class="review-subtitle">Original vs synthetic — properties</h3>
+          <div id="review-compare-root" class="review-compare-root" aria-live="polite"></div>
         </div>
         <div class="actions">
           <button type="button" class="btn btn-ghost" id="btn-back-synthetic">Back to synthetic data</button>

@@ -24,7 +24,11 @@
     json: "Technical JSON export",
   };
 
-  const METADATA_SCHEMA_VERSION = "1.5";
+  const METADATA_SCHEMA_VERSION = "1.6";
+
+  /** Max distinct category levels kept for synthetic marginals (tail → one “Other” bucket). */
+  const MAX_SYNTH_CATEGORICAL_LEVELS = 200;
+  const SYNTH_OTHER_RARE_LABEL = "Other (rare categories)";
 
   const COLUMN_SYNTH_EDIT_KEYS = [
     "synthDist",
@@ -50,6 +54,8 @@
     issues: [],
     charts: [],
     metaCharts: [],
+    /** Chart.js instances for review step distribution compare (not persisted). */
+    reviewCharts: [],
     columnInclude: null,
     columnMetadataEdits: {},
     /** Map pairKey(colA,colB) -> synthetic Pearson r in [-1,1] */
@@ -64,6 +70,15 @@
     metadataAiLastRun: null,
     /** Accepted coach recommendations persisted for synthesis + change summary */
     metadataAiAccepted: [],
+    /** Raw CSV text as first uploaded in this session (for comparison / provenance). */
+    originalCsvText: "",
+    /** User intent text for the synthetic run */
+    syntheticGoal: "",
+    /** Last requested synthetic row count */
+    syntheticRowCount: 5000,
+    /** Generated rows (same header order as state.headers) */
+    syntheticRows: [],
+    syntheticGeneratedAtUtc: null,
   };
 
   const els = {};
@@ -128,7 +143,17 @@
     els.viewMetadataReview = $("view-metadata-review");
     els.metadataChangesRoot = $("metadata-changes-root");
     els.viewSynthetic = $("view-synthetic");
+    els.syntheticOriginalLead = $("synthetic-original-lead");
+    els.syntheticGoal = $("synthetic-goal");
+    els.syntheticRowCount = $("synthetic-row-count");
+    els.btnGenerateSynthetic = $("btn-generate-synthetic");
+    els.btnDownloadSynthetic = $("btn-download-synthetic");
+    els.btnDownloadOriginalCsv = $("btn-download-original-csv");
+    els.syntheticGenStatus = $("synthetic-gen-status");
     els.viewReview = $("view-review");
+    els.reviewDashboardRoot = $("review-dashboard-root");
+    els.reviewDistributionsRoot = $("review-distributions-root");
+    els.reviewCompareRoot = $("review-compare-root");
     els.viewAnalyze = $("view-analyze");
     els.btnBackUpload = $("btn-back-upload");
     els.agentBanner = $("agent-banner");
@@ -246,6 +271,14 @@
         state.metadataChangeReviewNotes && typeof state.metadataChangeReviewNotes === "object" ? state.metadataChangeReviewNotes : {},
       metadataAiLastRun: state.metadataAiLastRun && typeof state.metadataAiLastRun === "object" ? state.metadataAiLastRun : null,
       metadataAiAccepted: Array.isArray(state.metadataAiAccepted) ? state.metadataAiAccepted : [],
+      originalCsvText: state.originalCsvText || "",
+      syntheticGoal: state.syntheticGoal || "",
+      syntheticRowCount:
+        typeof state.syntheticRowCount === "number" && Number.isFinite(state.syntheticRowCount)
+          ? state.syntheticRowCount
+          : 5000,
+      syntheticRows: Array.isArray(state.syntheticRows) ? state.syntheticRows : [],
+      syntheticGeneratedAtUtc: state.syntheticGeneratedAtUtc || null,
     });
   }
 
@@ -277,6 +310,12 @@
             }
           : null;
       state.metadataAiAccepted = Array.isArray(o.metadataAiAccepted) ? o.metadataAiAccepted : [];
+      state.originalCsvText = typeof o.originalCsvText === "string" ? o.originalCsvText : "";
+      state.syntheticGoal = typeof o.syntheticGoal === "string" ? o.syntheticGoal : "";
+      state.syntheticRowCount =
+        typeof o.syntheticRowCount === "number" && Number.isFinite(o.syntheticRowCount) ? o.syntheticRowCount : 5000;
+      state.syntheticRows = Array.isArray(o.syntheticRows) ? o.syntheticRows : [];
+      state.syntheticGeneratedAtUtc = o.syntheticGeneratedAtUtc || null;
       return true;
     } catch {
       return false;
@@ -496,6 +535,238 @@
     return a < b ? `${a}\x00${b}` : `${b}\x00${a}`;
   }
 
+  /**
+   * One full pass (plus a second pass for numeric histograms) over `rows` so synthesis metadata
+   * matches the working table: Welford stats, equal-width marginals, and categorical proportions
+   * use non-null denominators. Respects include/exclude and effective dtype from edits.
+   */
+  function buildFullColumnSynthesisProfiles(headers, rows, colStats) {
+    const inc = getColumnIncludeMap();
+    const stBy = new Map(colStats.map((c) => [c.name, c]));
+    const numericState = new Map();
+    const textFreq = new Map();
+
+    function ensureNum(name) {
+      if (!numericState.has(name)) {
+        numericState.set(name, { n: 0, mean: 0, M2: 0, min: Infinity, max: -Infinity });
+      }
+      return numericState.get(name);
+    }
+
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri];
+      for (let i = 0; i < headers.length; i++) {
+        const h = headers[i];
+        if (inc[h] === false) continue;
+        const st = stBy.get(h);
+        if (!st) continue;
+        const ed = getEditForCol(h);
+        const kind = effectiveColumnKind(st, ed);
+        const v = row[h];
+        if (kind === "numeric") {
+          if (v === "" || v == null) continue;
+          const x = Number(String(v).replace(/,/g, ""));
+          if (!Number.isFinite(x)) continue;
+          const S = ensureNum(h);
+          S.n++;
+          const delta = x - S.mean;
+          S.mean += delta / S.n;
+          const delta2 = x - S.mean;
+          S.M2 += delta * delta2;
+          if (x < S.min) S.min = x;
+          if (x > S.max) S.max = x;
+        } else {
+          if (v === "" || v == null) continue;
+          const k = String(v);
+          let m = textFreq.get(h);
+          if (!m) {
+            m = new Map();
+            textFreq.set(h, m);
+          }
+          m.set(k, (m.get(k) || 0) + 1);
+        }
+      }
+    }
+
+    const histCounts = new Map();
+    for (const [name, S] of numericState) {
+      if (S.n > 0 && S.max > S.min) {
+        histCounts.set(name, new Int32Array(NUMERIC_DIST_HIST_BINS));
+      }
+    }
+
+    if (histCounts.size) {
+      for (let ri = 0; ri < rows.length; ri++) {
+        const row = rows[ri];
+        for (let i = 0; i < headers.length; i++) {
+          const h = headers[i];
+          const arr = histCounts.get(h);
+          if (!arr) continue;
+          if (inc[h] === false) continue;
+          const st = stBy.get(h);
+          const ed = getEditForCol(h);
+          if (effectiveColumnKind(st, ed) !== "numeric") continue;
+          const v = row[h];
+          if (v === "" || v == null) continue;
+          const x = Number(String(v).replace(/,/g, ""));
+          if (!Number.isFinite(x)) continue;
+          const S = numericState.get(h);
+          const min = S.min;
+          const max = S.max;
+          const step = (max - min) / NUMERIC_DIST_HIST_BINS || 1;
+          let bi = Math.floor((x - min) / step);
+          if (bi >= NUMERIC_DIST_HIST_BINS) bi = NUMERIC_DIST_HIST_BINS - 1;
+          if (bi < 0) bi = 0;
+          arr[bi]++;
+        }
+      }
+    }
+
+    const numeric = new Map();
+    for (const [name, S] of numericState) {
+      if (S.n < 1) continue;
+      const variance = S.n > 1 ? S.M2 / (S.n - 1) : 0;
+      const std = Math.sqrt(Math.max(0, variance));
+      const min = S.min;
+      const max = S.max;
+      let marginal_numeric_histogram_inferred = null;
+      if (max > min) {
+        const counts = histCounts.get(name);
+        const total = counts ? [...counts].reduce((a, b) => a + b, 0) : 0;
+        if (counts && total > 0) {
+          const step = (max - min) / NUMERIC_DIST_HIST_BINS;
+          const bins = [];
+          for (let bi = 0; bi < NUMERIC_DIST_HIST_BINS; bi++) {
+            bins.push({
+              bin_label: (min + bi * step).toFixed(2),
+              proportion: Number((counts[bi] / total).toFixed(6)),
+            });
+          }
+          marginal_numeric_histogram_inferred = {
+            binning: "equal_width_on_full_column",
+            bin_count: NUMERIC_DIST_HIST_BINS,
+            bins,
+          };
+        }
+      } else {
+        marginal_numeric_histogram_inferred = {
+          binning: "degenerate_column_constant",
+          bin_count: 1,
+          bins: [{ bin_label: String(min), proportion: 1 }],
+        };
+      }
+      numeric.set(name, {
+        count: S.n,
+        min,
+        max,
+        mean: Number(S.mean.toFixed(6)),
+        std: Number(std.toFixed(6)),
+        variance: Number(variance.toFixed(6)),
+        marginal_numeric_histogram_inferred,
+      });
+    }
+
+    const categorical = new Map();
+    for (const [name, m] of textFreq) {
+      const total = [...m.values()].reduce((a, b) => a + b, 0);
+      if (!(total > 0)) continue;
+      const entries = [...m.entries()].sort((a, b) => b[1] - a[1]);
+      let items;
+      if (entries.length <= MAX_SYNTH_CATEGORICAL_LEVELS) {
+        items = entries.map(([value, count]) => ({
+          value: value.length > 200 ? value.slice(0, 198) + "…" : value,
+          count,
+          proportion: count / total,
+        }));
+      } else {
+        const cap = MAX_SYNTH_CATEGORICAL_LEVELS - 1;
+        const top = entries.slice(0, cap);
+        const rest = entries.slice(cap);
+        const restCount = rest.reduce((a, [, c]) => a + c, 0);
+        items = top.map(([value, count]) => ({
+          value: value.length > 200 ? value.slice(0, 198) + "…" : value,
+          count,
+          proportion: count / total,
+        }));
+        items.push({
+          value: SYNTH_OTHER_RARE_LABEL,
+          count: restCount,
+          proportion: restCount / total,
+        });
+      }
+      categorical.set(name, {
+        nonNullTotal: total,
+        distinctCount: m.size,
+        items,
+      });
+    }
+
+    return { numeric, categorical };
+  }
+
+  function sumExponentials(rng, n) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s -= Math.log(Math.max(1e-15, rng()));
+    return s;
+  }
+
+  function sampleBetaIntShape(rng, aInt, bInt, lo, hi) {
+    const ga = sumExponentials(rng, Math.max(1, Math.floor(aInt)));
+    const gb = sumExponentials(rng, Math.max(1, Math.floor(bInt)));
+    const t = ga / (ga + gb || 1e-15);
+    return lo + Math.min(1, Math.max(0, t)) * (hi - lo);
+  }
+
+  function mergeRareCategoryWeights(levels, threshold) {
+    const th = threshold == null || !Number.isFinite(threshold) ? 0.02 : Math.min(1, Math.max(0, threshold));
+    const main = [];
+    let otherW = 0;
+    const norm = (levels || []).reduce((a, x) => a + (Number(x.proportion) || 0), 0) || 1;
+    (levels || []).forEach((it) => {
+      const p = (Number(it.proportion) || 0) / norm;
+      const val = it.value != null ? String(it.value) : "";
+      if (p >= th) main.push({ v: val, w: p });
+      else otherW += p;
+    });
+    if (otherW > 1e-10) main.push({ v: SYNTH_OTHER_RARE_LABEL, w: otherW });
+    return main;
+  }
+
+  function sampleNumericInHistogramBin(refMin, refMax, binIndex, binCount, rng) {
+    if (!Number.isFinite(refMin) || !Number.isFinite(refMax) || binCount < 1) return null;
+    if (refMax <= refMin) return refMin;
+    const step = (refMax - refMin) / binCount;
+    const lo = refMin + binIndex * step;
+    const hi = binIndex === binCount - 1 ? refMax : refMin + (binIndex + 1) * step;
+    return lo + rng() * (hi - lo);
+  }
+
+  function sampleFromDiscreteHistogramBins(bins, refMin, refMax, rng) {
+    if (!bins || !bins.length) return null;
+    if (!Number.isFinite(refMin) || !Number.isFinite(refMax)) return null;
+    if (refMax < refMin) return null;
+    const bc = bins.length;
+    let u = rng();
+    let acc = 0;
+    for (let i = 0; i < bins.length; i++) {
+      acc += Math.max(0, Number(bins[i].proportion) || 0);
+      if (u <= acc || i === bins.length - 1) {
+        return sampleNumericInHistogramBin(refMin, refMax, i, bc, rng);
+      }
+    }
+    return sampleNumericInHistogramBin(refMin, refMax, bins.length - 1, bc, rng);
+  }
+
+  function gaussian12Clamp(rng, mean, std, mn, mx) {
+    let g = 0;
+    for (let k = 0; k < 12; k++) g += rng();
+    g -= 6;
+    let x = mean + g * std;
+    if (mn != null && Number.isFinite(mn)) x = Math.max(mn, x);
+    if (mx != null && Number.isFinite(mx)) x = Math.min(mx, x);
+    return Number.isFinite(x) ? x : mean;
+  }
+
   function buildSyntheticNumericTargetsFromEdits(ed, observedSummary) {
     const t = {};
     if (ed.synthDist && ed.synthDist !== "auto") t.distribution_shape = ed.synthDist;
@@ -642,7 +913,7 @@
 
   function defaultHowUsed(c, rows, highCard) {
     if (c.inferred === "numeric" && c.numericSample.length) {
-      return "Synthetic draws match this column’s marginal distribution (histogram / mean & spread). Joint relationships with other included fields can be layered in a full generator.";
+      return "Synthetic draws follow the full-column marginal (equal-width histogram and moments) unless you change distribution targets in metadata.";
     }
     return highCard
       ? "High cardinality: often treated as identifier-like; synthetic generators may hash, bucket, or exclude from categorical sampling."
@@ -651,6 +922,7 @@
 
   function enrichColumnsForMetadata(headers, rows, colStats) {
     const inc = getColumnIncludeMap();
+    const synthProf = rows.length ? buildFullColumnSynthesisProfiles(headers, rows, colStats) : null;
     return colStats.map((c) => {
       const ed = getEditForCol(c.name);
       const label_for_synthesis =
@@ -679,8 +951,26 @@
       const aiCoachForCol = acceptedAiGuidanceForColumn(c.name);
       if (aiCoachForCol.length) base.accepted_ai_coach_guidance = aiCoachForCol;
 
-      const observedNumFull =
+      const sampleNumSummary =
         c.inferred === "numeric" && c.numericSample.length ? computeNumericSummaryFromSamples(c.numericSample) : null;
+      const fullNum = synthProf && synthProf.numeric.get(c.name);
+      const observedNumFull =
+        fullNum && fullNum.count > 0
+          ? {
+              min: fullNum.min,
+              max: fullNum.max,
+              mean: fullNum.mean,
+              median: sampleNumSummary ? sampleNumSummary.median : fullNum.mean,
+              std: fullNum.std,
+              variance: fullNum.variance,
+            }
+          : sampleNumSummary
+            ? {
+                ...sampleNumSummary,
+                variance:
+                  sampleNumSummary.std != null ? Number((sampleNumSummary.std * sampleNumSummary.std).toFixed(6)) : 0,
+              }
+            : null;
       const observedCatRef = topCategoriesObserved(rows, c.name, 10);
 
       if (kind === "numeric") {
@@ -692,7 +982,11 @@
             mean: observedNumFull.mean,
             median: observedNumFull.median,
             std: observedNumFull.std,
+            variance: observedNumFull.variance,
           };
+        }
+        if (fullNum && fullNum.marginal_numeric_histogram_inferred) {
+          o.marginal_numeric_histogram_inferred = fullNum.marginal_numeric_histogram_inferred;
         }
         const synthNum = buildSyntheticNumericTargetsFromEdits(ed, observedNumFull || undefined);
         if (synthNum) o.synthetic_numeric_targets = synthNum;
@@ -700,10 +994,24 @@
       }
 
       const top6 = observedCatRef.slice(0, 6);
+      const fullCat = synthProf && synthProf.categorical.get(c.name);
+      const marginal_levels_inferred =
+        fullCat && fullCat.items && fullCat.items.length
+          ? {
+              non_null_total: fullCat.nonNullTotal,
+              distinct_values: fullCat.distinctCount,
+              levels: fullCat.items.map((it) => ({
+                value: it.value,
+                count: it.count,
+                proportion: Number(Number(it.proportion).toFixed(6)),
+              })),
+            }
+          : undefined;
       const o = {
         ...base,
         categorical_summary: {
           top_categories: top6,
+          ...(marginal_levels_inferred ? { marginal_levels_inferred } : {}),
         },
       };
       const synthCat = buildSyntheticCategoricalTargetsFromEdits(ed, observedCatRef);
@@ -1127,6 +1435,7 @@
         how_source_becomes_metadata: [
           "The CSV is parsed locally. We never send the full file to a model unless you run the optional inspection API call (sample rows only).",
           "Each column is profiled: type guess, counts, missingness, distinctness, and either numeric summaries or top category frequencies.",
+          "For synthesis, numeric summaries and marginal_numeric_histogram_inferred use the full working table (Welford + equal-width bins); categorical_summary.marginal_levels_inferred lists proportions over non-null cells (capped with an Other bucket when needed). Manual metadata edits and accepted AI coach items still override where you set them.",
           "This object is the descriptive metadata package: it is what a synthetic data engine uses to reproduce shape and marginals without copying raw rows.",
           "Use the dashboard to include or exclude columns, then Edit to adjust labels, schema type intent, and notes — those adjustments are written into the JSON package.",
           "Pairwise Pearson correlations summarize linear co-movement between numeric columns on rows where both values parse as numbers (see numeric_correlation_pearson).",
@@ -1138,6 +1447,655 @@
         ],
       },
     };
+  }
+
+  function hashStringToUint32(str) {
+    let h = 2166136261;
+    const s = String(str || "");
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function rnd() {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function pickWeightedChoice(items, rng) {
+    if (!items || !items.length) return null;
+    const wsum = items.reduce((a, x) => a + Math.max(0, x.w), 0);
+    if (!(wsum > 0)) return items[Math.floor(rng() * items.length)].v;
+    let u = rng() * wsum;
+    for (let i = 0; i < items.length; i++) {
+      u -= Math.max(0, items[i].w);
+      if (u <= 0 || i === items.length - 1) return items[i].v;
+    }
+    return items[items.length - 1].v;
+  }
+
+  function sampleNumericFromColumnMeta(meta, st, rng) {
+    const ref = meta.numeric_summary;
+    const t = meta.synthetic_numeric_targets;
+    const inferred = meta.marginal_numeric_histogram_inferred;
+    const mnUser = parseOptionalNumber(t && t.range ? t.range.min : null);
+    const mxUser = parseOptionalNumber(t && t.range ? t.range.max : null);
+    const mn = mnUser ?? (ref && ref.min);
+    const mx = mxUser ?? (ref && ref.max);
+    const mean =
+      parseOptionalNumber(t && t.moments ? t.moments.mean : null) ?? (ref && ref.mean != null ? ref.mean : null);
+    const variance =
+      parseOptionalNumber(t && t.moments ? t.moments.variance : null) ??
+      (ref && ref.variance != null && Number.isFinite(ref.variance)
+        ? ref.variance
+        : ref && ref.std != null && Number.isFinite(ref.std)
+          ? ref.std * ref.std
+          : null);
+
+    if (ref && Number.isFinite(ref.min) && Number.isFinite(ref.max) && ref.max >= ref.min) {
+      if (t && t.custom_discretized_histogram && t.custom_discretized_histogram.bins) {
+        const x = sampleFromDiscreteHistogramBins(t.custom_discretized_histogram.bins, ref.min, ref.max, rng);
+        if (x != null && Number.isFinite(x)) return x;
+      }
+    }
+
+    const shape = t && t.distribution_shape ? String(t.distribution_shape) : "";
+    if (shape && shape !== "auto") {
+      if (shape === "uniform") {
+        if (mn != null && mx != null && Number.isFinite(mn) && Number.isFinite(mx) && mx > mn) return mn + rng() * (mx - mn);
+      } else if (shape === "normal") {
+        if (mean != null && variance != null && Number.isFinite(variance) && variance >= 0) {
+          const std = Math.sqrt(Math.max(variance, 1e-12));
+          return gaussian12Clamp(rng, mean, std, mn, mx);
+        }
+      } else if (shape === "skew_right") {
+        if (mn != null && mx != null && Number.isFinite(mn) && Number.isFinite(mx) && mx > mn) {
+          return sampleBetaIntShape(rng, 2, 5, mn, mx);
+        }
+      } else if (shape === "skew_left") {
+        if (mn != null && mx != null && Number.isFinite(mn) && Number.isFinite(mx) && mx > mn) {
+          return sampleBetaIntShape(rng, 5, 2, mn, mx);
+        }
+      } else if (shape === "multimodal") {
+        if (mean != null && variance != null && Number.isFinite(variance) && variance >= 0 && mn != null && mx != null) {
+          const std = Math.sqrt(Math.max(variance, 1e-12));
+          const m1 = mean - 0.45 * std;
+          const m2 = mean + 0.45 * std;
+          const branch = rng() < 0.5 ? m1 : m2;
+          return gaussian12Clamp(rng, branch, std * 0.72, mn, mx);
+        }
+      }
+    }
+
+    if (ref && Number.isFinite(ref.min) && Number.isFinite(ref.max)) {
+      if (inferred && inferred.bins && inferred.bins.length) {
+        const x = sampleFromDiscreteHistogramBins(inferred.bins, ref.min, ref.max, rng);
+        if (x != null && Number.isFinite(x)) return x;
+      }
+    }
+
+    if (mean != null && variance != null && Number.isFinite(variance) && variance >= 0) {
+      const std = Math.sqrt(Math.max(variance, 1e-12));
+      return gaussian12Clamp(rng, mean, std, mn, mx);
+    }
+    if (mn != null && mx != null && Number.isFinite(mn) && Number.isFinite(mx) && mx > mn) {
+      return mn + rng() * (mx - mn);
+    }
+    if (st && st.numericSample && st.numericSample.length) {
+      const arr = st.numericSample;
+      return arr[Math.floor(rng() * arr.length)];
+    }
+    return 0;
+  }
+
+  function sampleTextFromColumnMeta(meta, rng) {
+    const cat = meta.categorical_summary || {};
+    const marginal = cat.marginal_levels_inferred;
+    const levels = marginal && marginal.levels ? marginal.levels : null;
+    const top = cat.top_categories || [];
+    const t = meta.synthetic_categorical_targets;
+
+    if (t && t.strategy === "uniform_balance") {
+      const poolSrc = levels && levels.length ? levels : top;
+      const pool = poolSrc.map((x) => x.value).filter((v) => v != null && String(v) !== "");
+      if (pool.length) return String(pool[Math.floor(rng() * pool.length)]);
+    }
+
+    if (t && t.strategy === "custom" && t.custom_category_proportions && t.custom_category_proportions.length) {
+      const items = t.custom_category_proportions.map((r) => ({
+        v: r.value != null ? String(r.value) : "",
+        w: Number(r.proportion) || 0,
+      }));
+      const c = pickWeightedChoice(items, rng);
+      return c != null ? String(c) : "";
+    }
+
+    if (t && t.strategy === "merge_rare") {
+      const th = t.merge_rare_below_proportion;
+      const src = levels && levels.length ? levels : top;
+      const merged = mergeRareCategoryWeights(src, th != null ? Number(th) : 0.02);
+      const c = pickWeightedChoice(merged, rng);
+      return c != null ? String(c) : "";
+    }
+
+    if (levels && levels.length) {
+      const items = levels.map((o) => ({ v: o.value != null ? String(o.value) : "", w: Number(o.proportion) || 0 }));
+      const c = pickWeightedChoice(items, rng);
+      return c != null ? String(c) : "";
+    }
+    if (top.length) {
+      const items = top.map((o) => ({ v: o.value != null ? String(o.value) : "", w: Number(o.proportion) || 0 }));
+      const c = pickWeightedChoice(items, rng);
+      return c != null ? String(c) : "";
+    }
+    return "";
+  }
+
+  function formatSynthCellValue(v) {
+    if (v === "" || v == null) return "";
+    if (typeof v === "number" && Number.isFinite(v)) {
+      const t = Math.abs(v) >= 1e6 || (Math.abs(v) > 0 && Math.abs(v) < 1e-4) ? v.toExponential(4) : String(Number(v.toFixed(6)));
+      return t;
+    }
+    return String(v);
+  }
+
+  function generateSyntheticRowsFromMetadata(nRows, goalText) {
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const pkg = buildSyntheticMetadataPayload(state.headers, state.rows, colStats);
+    const inc = getColumnIncludeMap();
+    const metaByName = new Map(pkg.columns.map((c) => [c.name, c]));
+    const seed = hashStringToUint32(
+      `${goalText || ""}\0${state.fileName}\0${nRows}\0${pkg.generated_at_utc || ""}\0${METADATA_SCHEMA_VERSION}`
+    );
+    const rng = mulberry32(seed);
+    const out = [];
+    for (let r = 0; r < nRows; r++) {
+      const row = {};
+      for (const h of state.headers) {
+        if (inc[h] === false) {
+          row[h] = "";
+          continue;
+        }
+        const meta = metaByName.get(h);
+        const st = colStats.find((x) => x.name === h);
+        if (!meta) {
+          row[h] = "";
+          continue;
+        }
+        const missRate = Math.min(1, Math.max(0, Number(meta.missing_rate) || 0));
+        if (missRate > 0 && rng() < missRate) {
+          row[h] = "";
+          continue;
+        }
+        if (meta.effective_synthesis_dtype === "numeric") {
+          const x = sampleNumericFromColumnMeta(meta, st, rng);
+          row[h] = formatSynthCellValue(x);
+        } else {
+          row[h] = sampleTextFromColumnMeta(meta, rng);
+        }
+      }
+      out.push(row);
+    }
+    return out;
+  }
+
+  function summarizeNumericColumn(rows, colName) {
+    const xs = [];
+    rows.forEach((r) => {
+      const v = r[colName];
+      if (v === "" || v == null) return;
+      const x = Number(String(v).replace(/,/g, ""));
+      if (Number.isFinite(x)) xs.push(x);
+    });
+    if (xs.length < 2) return null;
+    const s = computeNumericSummaryFromSamples(xs);
+    return { n: xs.length, ...s };
+  }
+
+  function summarizeTextColumn(rows, colName) {
+    const freq = new Map();
+    let n = 0;
+    rows.forEach((r) => {
+      const v = r[colName];
+      if (v === "" || v == null) return;
+      n++;
+      const k = String(v);
+      freq.set(k, (freq.get(k) || 0) + 1);
+    });
+    if (!n) return { nonNull: 0, distinct: 0, topValue: "—", topPct: 0 };
+    const top = [...freq.entries()].sort((a, b) => b[1] - a[1])[0];
+    return { nonNull: n, distinct: freq.size, topValue: top ? top[0] : "—", topPct: top ? (top[1] / n) * 100 : 0 };
+  }
+
+  function renderSyntheticPage() {
+    if (!els.viewSynthetic) return;
+    if (els.syntheticGoal) els.syntheticGoal.value = state.syntheticGoal || "";
+    if (els.syntheticRowCount) els.syntheticRowCount.value = String(state.syntheticRowCount || 5000);
+    if (els.syntheticOriginalLead) {
+      const bytes = (state.originalCsvText || "").length;
+      els.syntheticOriginalLead.innerHTML = `The <strong>original uploaded CSV</strong> is stored in this session (~${bytes.toLocaleString()} characters) for comparison. Generation follows your <strong>metadata package</strong>: by default it matches the working table’s <strong>full-column marginals</strong> (numeric histograms, category mix, missingness). Overrides from the metadata editor, Distributions sliders, or accepted AI coach tips apply where you set them. <strong>Joint</strong> correlation structure between numerics is not fully simulated yet.`;
+    }
+    if (els.btnDownloadSynthetic) els.btnDownloadSynthetic.classList.toggle("hidden", !state.syntheticRows.length);
+    if (els.syntheticGenStatus) {
+      if (state.syntheticGeneratedAtUtc && state.syntheticRows.length) {
+        els.syntheticGenStatus.textContent = `Last run: ${state.syntheticRows.length.toLocaleString()} rows at ${new Date(
+          state.syntheticGeneratedAtUtc
+        ).toLocaleString()}.`;
+      } else {
+        els.syntheticGenStatus.textContent = "";
+      }
+    }
+  }
+
+  function buildReviewDashboardHtml() {
+    const n = state.syntheticRows.length;
+    const origN = state.rows.length;
+    const goal = (state.syntheticGoal || "").trim() || "—";
+    const when = state.syntheticGeneratedAtUtc ? new Date(state.syntheticGeneratedAtUtc).toLocaleString() : "—";
+    if (!n) {
+      return `<p class="panel-lead">No synthetic dataset yet. Go back one step to <strong>Synthetic data</strong>, enter a goal and row count, then click <strong>Generate</strong>.</p>`;
+    }
+    const preview = state.syntheticRows.slice(0, 12);
+    const th = state.headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("");
+    const tr = preview
+      .map(
+        (r) =>
+          `<tr>${state.headers.map((h) => `<td>${escapeHtml(String(r[h] ?? "")).slice(0, 80)}</td>`).join("")}</tr>`
+      )
+      .join("");
+    return `<div class="review-dash-stats">
+      <div class="stat-card"><div class="stat-value">${n.toLocaleString()}</div><div class="stat-label">Synthetic rows</div></div>
+      <div class="stat-card"><div class="stat-value">${origN.toLocaleString()}</div><div class="stat-label">Original rows (working)</div></div>
+      <div class="stat-card"><div class="stat-value">${state.headers.length}</div><div class="stat-label">Columns</div></div>
+      <div class="stat-card"><div class="stat-value">${when}</div><div class="stat-label">Generated at</div></div>
+    </div>
+    <div class="review-goal-block"><strong>Goal:</strong> ${escapeHtml(goal)}</div>
+    <h3 class="review-subtitle">Sample (first 12 synthetic rows)</h3>
+    <div class="table-wrap"><table class="data-table"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
+  }
+
+  function buildReviewCompareHtml() {
+    const inc = getColumnIncludeMap();
+    const cols = state.headers.filter((h) => inc[h] !== false);
+    if (!state.syntheticRows.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">Comparison tables appear after you generate synthetic data.</p>`;
+    }
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const rowsOut = [];
+    rowsOut.push(
+      `<tr><th scope="row">Row count</th><td>${state.rows.length.toLocaleString()}</td><td>${state.syntheticRows.length.toLocaleString()}</td></tr>`
+    );
+    rowsOut.push(
+      `<tr><th scope="row">Included columns</th><td>${cols.length}</td><td>${cols.length}</td></tr>`
+    );
+    for (const h of cols) {
+      const st = colStats.find((x) => x.name === h);
+      const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
+      if (kind === "numeric") {
+        const o = summarizeNumericColumn(state.rows, h);
+        const s = summarizeNumericColumn(state.syntheticRows, h);
+        if (o && s) {
+          rowsOut.push(
+            `<tr><th scope="row">${escapeHtml(h)} (numeric)</th><td>mean ${o.mean.toFixed(2)} · std ${o.std.toFixed(2)} · [${o.min}, ${o.max}]</td><td>mean ${s.mean.toFixed(2)} · std ${s.std.toFixed(2)} · [${s.min}, ${s.max}]</td></tr>`
+          );
+        } else {
+          rowsOut.push(
+            `<tr><th scope="row">${escapeHtml(h)}</th><td>${o ? "numeric" : "—"}</td><td>${s ? "numeric" : "—"}</td></tr>`
+          );
+        }
+      } else {
+        const o = summarizeTextColumn(state.rows, h);
+        const s = summarizeTextColumn(state.syntheticRows, h);
+        rowsOut.push(
+          `<tr><th scope="row">${escapeHtml(h)} (categorical)</th><td>distinct ${o.distinct} · top: ${escapeHtml(
+            String(o.topValue).slice(0, 40)
+          )} (${o.topPct.toFixed(1)}%)</td><td>distinct ${s.distinct} · top: ${escapeHtml(String(s.topValue).slice(0, 40))} (${s.topPct.toFixed(
+            1
+          )}%)</td></tr>`
+        );
+      }
+    }
+    return `<div class="table-wrap"><table class="data-table review-compare-table"><thead><tr><th>Property / column</th><th>Original (working CSV)</th><th>Synthetic</th></tr></thead><tbody>${rowsOut.join(
+      ""
+    )}</tbody></table></div><p class="panel-lead meta-changes-lead-tight">The <strong>original</strong> column summarizes your <strong>current working table</strong> in this session (including any inspection fixes). The verbatim first upload is still kept in the session as <strong>original CSV text</strong> for provenance and future pipeline steps.</p>`;
+  }
+
+  function renderReviewPage() {
+    if (els.reviewDashboardRoot) els.reviewDashboardRoot.innerHTML = buildReviewDashboardHtml();
+    if (els.reviewDistributionsRoot) {
+      destroyChartList(state.reviewCharts);
+      els.reviewDistributionsRoot.innerHTML = buildReviewDistributionsHtml();
+      renderReviewDistributionCharts();
+    }
+    if (els.reviewCompareRoot) els.reviewCompareRoot.innerHTML = buildReviewCompareHtml();
+  }
+
+  function extractNumericColumnValues(rows, colName) {
+    const xs = [];
+    if (!rows || !rows.length) return xs;
+    rows.forEach((r) => {
+      const v = r[colName];
+      if (v === "" || v == null) return;
+      const x = Number(String(v).replace(/,/g, ""));
+      if (Number.isFinite(x)) xs.push(x);
+    });
+    return xs;
+  }
+
+  function histogramCounts(vals, binCount, min, max) {
+    const counts = new Array(binCount).fill(0);
+    if (!vals.length || !(max > min)) return counts;
+    const step = (max - min) / binCount || 1;
+    vals.forEach((x) => {
+      let i = Math.floor((x - min) / step);
+      if (i >= binCount) i = binCount - 1;
+      if (i < 0) i = 0;
+      counts[i]++;
+    });
+    return counts;
+  }
+
+  function countsToProportions(counts) {
+    const sum = counts.reduce((a, b) => a + b, 0) || 1;
+    return counts.map((c) => c / sum);
+  }
+
+  /** Axis tick label for proportion in [0, ~1] on review distribution charts. */
+  function formatReviewProportionTick(p) {
+    const pct = Number(p) * 100;
+    if (!Number.isFinite(pct)) return "";
+    if (Math.abs(pct) < 0.0005) return "0%";
+    if (pct >= 10) return `${Math.round(pct)}%`;
+    if (pct >= 1) return `${pct.toFixed(1)}%`;
+    return `${pct.toFixed(2)}%`;
+  }
+
+  /** Match Data inspection Chart.js fill/stroke (numeric). */
+  const REVIEW_NUM_ORIG_FILL = "rgba(14, 165, 233, 0.48)";
+  const REVIEW_NUM_ORIG_STROKE = "rgba(2, 132, 199, 0.9)";
+  const REVIEW_NUM_SYN_FILL = "rgba(252, 165, 165, 0.55)";
+  const REVIEW_NUM_SYN_STROKE = "rgba(220, 38, 38, 0.9)";
+  /** Match inspection categorical colors. */
+  const REVIEW_CAT_ORIG_FILL = "rgba(56, 189, 248, 0.52)";
+  const REVIEW_CAT_ORIG_STROKE = "rgba(3, 105, 161, 0.85)";
+  const REVIEW_CAT_SYN_FILL = "rgba(254, 202, 202, 0.6)";
+  const REVIEW_CAT_SYN_STROKE = "rgba(185, 28, 28, 0.88)";
+
+  function buildReviewNumericOverlapSvgProportional(colName, origRows, synthRows) {
+    const o = extractNumericColumnValues(origRows, colName);
+    const s = extractNumericColumnValues(synthRows, colName);
+    if (o.length < 1 && s.length < 1) return "";
+    let min = Math.min(...o, ...s);
+    let max = Math.max(...o, ...s);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return "";
+    if (max <= min) {
+      min -= 1;
+      max += 1;
+    }
+    const bins = 12;
+    const countsO = histogramCounts(o, bins, min, max);
+    const countsS = histogramCounts(s, bins, min, max);
+    const propO = countsToProportions(countsO);
+    const propS = countsToProportions(countsS);
+    const peak = Math.max(...propO, ...propS, 1e-9) * 1.08;
+
+    const W = 400;
+    const H = 216;
+    const padL = 52;
+    const padR = 10;
+    const padTop = 16;
+    const padBot = 32;
+    const plotW = W - padL - padR;
+    const plotH = H - padTop - padBot;
+    const bottom = H - padBot;
+    const slotW = plotW / bins;
+    const yTickCount = 5;
+    const yTicks = [];
+    if (!(peak > 1e-15)) yTicks.push(0);
+    else for (let ti = 0; ti < yTickCount; ti++) yTicks.push((peak * ti) / (yTickCount - 1));
+
+    const parts = [];
+    parts.push(
+      `<svg class="review-dist-svg" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Original vs synthetic share by bin for ${escapeAttr(
+        colName
+      )}">`
+    );
+    yTicks.forEach((tv) => {
+      const y = bottom - (tv / peak) * plotH;
+      parts.push(
+        `<line class="review-dist-grid" x1="${padL}" y1="${y.toFixed(2)}" x2="${W - padR}" y2="${y.toFixed(2)}" stroke="currentColor" stroke-opacity="0.09" stroke-width="1" />`
+      );
+    });
+    parts.push(
+      `<line class="review-dist-axis review-dist-axis--y" x1="${padL}" y1="${padTop}" x2="${padL}" y2="${bottom}" stroke="currentColor" stroke-opacity="0.28" stroke-width="1" />`
+    );
+    parts.push(
+      `<line class="review-dist-axis" x1="${padL}" y1="${bottom}" x2="${W - padR}" y2="${bottom}" stroke="currentColor" stroke-opacity="0.22" stroke-width="1" />`
+    );
+    for (let i = 0; i < bins; i++) {
+      const x = padL + i * slotW;
+      const bw = slotW * 0.78;
+      const bx = x + (slotW - bw) / 2;
+      const hO = (propO[i] / peak) * plotH;
+      const hS = (propS[i] / peak) * plotH;
+      const yO = bottom - hO;
+      const yS = bottom - hS;
+      parts.push(
+        `<rect rx="4" fill="${REVIEW_NUM_ORIG_FILL}" stroke="${REVIEW_NUM_ORIG_STROKE}" stroke-width="1" x="${bx.toFixed(2)}" y="${yO.toFixed(
+          2
+        )}" width="${bw.toFixed(2)}" height="${Math.max(hO, 0).toFixed(2)}" />`
+      );
+      parts.push(
+        `<rect rx="4" fill="${REVIEW_NUM_SYN_FILL}" stroke="${REVIEW_NUM_SYN_STROKE}" stroke-width="1" x="${bx.toFixed(2)}" y="${yS.toFixed(
+          2
+        )}" width="${bw.toFixed(2)}" height="${Math.max(hS, 0).toFixed(2)}" />`
+      );
+    }
+    yTicks.forEach((tv) => {
+      const y = bottom - (tv / peak) * plotH;
+      parts.push(
+        `<text class="review-dist-y-tick" x="${padL - 6}" y="${(y + 3).toFixed(2)}" text-anchor="end" font-size="8">${escapeHtml(
+          formatReviewProportionTick(tv)
+        )}</text>`
+      );
+    });
+    for (let i = 0; i < bins; i++) {
+      const x = padL + i * slotW;
+      const edge = min + (i * (max - min)) / bins;
+      parts.push(
+        `<text class="review-dist-tick" x="${(x + slotW / 2).toFixed(2)}" y="${H - 5}" text-anchor="middle" font-size="8">${escapeHtml(
+          formatDistNumBinAxisDisplay(edge)
+        )}</text>`
+      );
+    }
+    parts.push(
+      `<text class="review-dist-axis-label review-dist-axis-label--caption" x="${padL}" y="11" font-size="8">Y: share of rows in bin · X: bin start</text>`
+    );
+    parts.push(`</svg>`);
+    return `<article class="chart-card review-dist-card">
+      <h4>Distribution — ${escapeHtml(colName)}</h4>
+      <p class="review-dist-sub">Heights are <strong>proportion of rows</strong> in each dataset (each side sums to 100% across bins). Blue drawn first, then red — overlap reads as purple.</p>
+      <div class="review-dist-chart">${parts.join("")}</div>
+    </article>`;
+  }
+
+  function buildReviewCategoryOverlapSvgProportional(colName, origRows, synthRows) {
+    const fo = new Map();
+    const fs = new Map();
+    let no = 0;
+    let ns = 0;
+    origRows.forEach((r) => {
+      const v = r[colName];
+      if (v === "" || v == null) return;
+      no++;
+      fo.set(String(v), (fo.get(String(v)) || 0) + 1);
+    });
+    synthRows.forEach((r) => {
+      const v = r[colName];
+      if (v === "" || v == null) return;
+      ns++;
+      fs.set(String(v), (fs.get(String(v)) || 0) + 1);
+    });
+    if (!no && !ns) return "";
+    const score = new Map();
+    fo.forEach((c, k) => score.set(k, (score.get(k) || 0) + c));
+    fs.forEach((c, k) => score.set(k, (score.get(k) || 0) + c));
+    const keys = [...score.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map((x) => x[0]);
+    if (!keys.length) return "";
+    const propO = keys.map((k) => (no ? (fo.get(k) || 0) / no : 0));
+    const propS = keys.map((k) => (ns ? (fs.get(k) || 0) / ns : 0));
+    const peak = Math.max(...propO, ...propS, 1e-9) * 1.08;
+
+    const W = 400;
+    const rowH = 30;
+    const padL = 112;
+    const padR = 12;
+    const padTop = 14;
+    const plotW = W - padL - padR;
+    const barH = 18;
+    const axisStrip = 26;
+    const plotBodyH = keys.length * rowH;
+    const axisY = padTop + plotBodyH + 4;
+    const H = Math.min(420, padTop + plotBodyH + axisStrip + 8);
+    const xTickCount = 5;
+    const xTicks = [];
+    if (!(peak > 1e-15)) xTicks.push(0);
+    else for (let ti = 0; ti < xTickCount; ti++) xTicks.push((peak * ti) / (xTickCount - 1));
+
+    const parts = [];
+    parts.push(
+      `<svg class="review-dist-svg review-dist-svg--cat" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Original vs synthetic category shares for ${escapeAttr(
+        colName
+      )}">`
+    );
+    parts.push(
+      `<text class="review-dist-axis-label review-dist-axis-label--caption" x="${padL}" y="11" font-size="8">Bar length: share of rows (X scale below)</text>`
+    );
+    xTicks.forEach((tv) => {
+      const xi = padL + (tv / peak) * plotW;
+      parts.push(
+        `<line class="review-dist-grid review-dist-grid--vert" x1="${xi.toFixed(2)}" y1="${padTop}" x2="${xi.toFixed(2)}" y2="${axisY}" stroke="currentColor" stroke-opacity="0.07" stroke-width="1" />`
+      );
+    });
+    parts.push(
+      `<line class="review-dist-axis" x1="${padL}" y1="${axisY}" x2="${W - padR}" y2="${axisY}" stroke="currentColor" stroke-opacity="0.22" stroke-width="1" />`
+    );
+    keys.forEach((k, i) => {
+      const y = padTop + i * rowH + 6;
+      const lab = k.length > 18 ? `${k.slice(0, 16)}…` : k;
+      parts.push(
+        `<text class="review-dist-cat-label" x="${padL - 6}" y="${y + barH / 2 + 3}" text-anchor="end" font-size="9">${escapeHtml(lab)}</text>`
+      );
+      const wO = (propO[i] / peak) * plotW;
+      const wS = (propS[i] / peak) * plotW;
+      parts.push(
+        `<rect rx="4" fill="${REVIEW_CAT_ORIG_FILL}" stroke="${REVIEW_CAT_ORIG_STROKE}" stroke-width="1" x="${padL}" y="${y}" width="${Math.max(
+          wO,
+          0
+        ).toFixed(2)}" height="${barH}" />`
+      );
+      parts.push(
+        `<rect rx="4" fill="${REVIEW_CAT_SYN_FILL}" stroke="${REVIEW_CAT_SYN_STROKE}" stroke-width="1" x="${padL}" y="${y}" width="${Math.max(
+          wS,
+          0
+        ).toFixed(2)}" height="${barH}" />`
+      );
+    });
+    xTicks.forEach((tv) => {
+      const xi = padL + (tv / peak) * plotW;
+      parts.push(
+        `<text class="review-dist-x-tick-cat" x="${xi.toFixed(2)}" y="${axisY + 14}" text-anchor="middle" font-size="8">${escapeHtml(
+          formatReviewProportionTick(tv)
+        )}</text>`
+      );
+    });
+    parts.push(`</svg>`);
+    return `<article class="chart-card review-dist-card">
+      <h4>Top categories — ${escapeHtml(colName)}</h4>
+      <p class="review-dist-sub">Bar length = <strong>share of rows</strong> in that dataset for the category. Same track: blue under red; overlap reads as purple.</p>
+      <div class="review-dist-chart">${parts.join("")}</div>
+    </article>`;
+  }
+
+  function buildReviewDistributionsHtml() {
+    if (!state.syntheticRows.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">Distribution comparisons appear after you generate synthetic data.</p>`;
+    }
+    return `<div class="review-dist-legend" role="group" aria-label="Legend">
+      <span class="review-dist-legend-item"><span class="review-dist-swatch review-dist-swatch--orig" aria-hidden="true"></span> Original (share)</span>
+      <span class="review-dist-legend-item"><span class="review-dist-swatch review-dist-swatch--synth" aria-hidden="true"></span> Synthetic (share)</span>
+      <span class="review-dist-legend-item review-dist-legend-purple">Overlap → purple</span>
+    </div>
+    <p class="panel-lead review-dist-chart-note">Counts are normalized <strong>within each dataset</strong> so different row totals do not stretch one side.</p>
+    <div id="review-dist-charts-row" class="charts-row" aria-label="Original versus synthetic distributions"></div>`;
+  }
+
+  function renderReviewDistributionCharts() {
+    const host = els.reviewDistributionsRoot && els.reviewDistributionsRoot.querySelector("#review-dist-charts-row");
+    destroyChartList(state.reviewCharts);
+    if (!host || !state.syntheticRows.length) return;
+    const inc = getColumnIncludeMap();
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const blocks = [];
+    state.headers.forEach((h) => {
+      if (inc[h] === false) return;
+      const st = colStats.find((x) => x.name === h);
+      const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
+      if (kind === "numeric") {
+        const html = buildReviewNumericOverlapSvgProportional(h, state.rows, state.syntheticRows);
+        if (html) blocks.push(html);
+      } else {
+        const html = buildReviewCategoryOverlapSvgProportional(h, state.rows, state.syntheticRows);
+        if (html) blocks.push(html);
+      }
+    });
+    host.innerHTML = blocks.length ? blocks.join("") : `<p class="panel-lead meta-changes-lead-tight">No charts to show.</p>`;
+  }
+
+  function downloadOriginalCsvSnapshot() {
+    const text = state.originalCsvText || state.rawText || "";
+    if (!text.trim()) {
+      toast("No original CSV text in this session.");
+      return;
+    }
+    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = state.fileName || "original_upload.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("Original upload download started.");
+  }
+
+  function downloadSyntheticCsv() {
+    if (!state.syntheticRows.length) {
+      toast("Generate a synthetic dataset first.");
+      return;
+    }
+    const Papa = window.Papa;
+    const text = Papa.unparse({
+      fields: state.headers,
+      data: state.syntheticRows.map((r) => state.headers.map((h) => r[h] ?? "")),
+    });
+    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (state.fileName || "dataset").replace(/\.csv$/i, "") + "_synthetic.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("Download started.");
   }
 
   let metadataViewEventsBound = false;
@@ -3130,6 +4088,7 @@
     if (n >= 1 && !state.rows.length) return;
     const prev = state.step;
     state.step = n;
+    if (prev === 4 && n !== 4) destroyChartList(state.reviewCharts);
     if (prev === 2 && n !== 2) state.metadataPane = "editor";
     renderStepper();
     els.viewUpload.classList.toggle("hidden", n !== 0);
@@ -3143,6 +4102,8 @@
       if (state.metadataPane === "editor") renderMetadata();
       else renderMetadataChangesReview();
     }
+    if (n === 3) renderSyntheticPage();
+    if (n === 4) renderReviewPage();
   }
 
   function onFileLoaded(fileName, text) {
@@ -3151,6 +4112,11 @@
     state.headers = headers;
     state.rows = rows;
     state.rawText = text;
+    state.originalCsvText = text;
+    state.syntheticGoal = "";
+    state.syntheticRowCount = 5000;
+    state.syntheticRows = [];
+    state.syntheticGeneratedAtUtc = null;
     saveSession();
     els.fileMeta.classList.add("is-visible");
     els.fileName.textContent = fileName;
@@ -3528,12 +4494,17 @@
       state.headers = [];
       state.fileName = "";
       state.rawText = "";
+      state.originalCsvText = "";
       state.columnInclude = null;
       state.columnMetadataEdits = {};
       state.correlationEdits = {};
       state.metadataPane = "editor";
       state.metadataSectionNotes = {};
       state.metadataChangeReviewNotes = {};
+      state.syntheticGoal = "";
+      state.syntheticRowCount = 5000;
+      state.syntheticRows = [];
+      state.syntheticGeneratedAtUtc = null;
       resetMetadataAiCoachState();
       state.issues = [];
       els.fileMeta.classList.remove("is-visible");
@@ -3650,8 +4621,68 @@
     if (els.btnProceedReview) {
       els.btnProceedReview.addEventListener("click", () => {
         if (!state.rows.length) return;
+        if (!state.syntheticRows.length) {
+          toast("Generate synthetic data first, then continue to review.");
+          return;
+        }
         setStep(4);
       });
+    }
+
+    if (els.syntheticGoal) {
+      els.syntheticGoal.addEventListener("input", () => {
+        state.syntheticGoal = els.syntheticGoal.value;
+        saveSession();
+      });
+    }
+    if (els.syntheticRowCount) {
+      els.syntheticRowCount.addEventListener("change", () => {
+        const n = Number(els.syntheticRowCount.value);
+        state.syntheticRowCount = Number.isFinite(n) && n >= 1 ? Math.min(100000, Math.floor(n)) : 5000;
+        els.syntheticRowCount.value = String(state.syntheticRowCount);
+        saveSession();
+      });
+    }
+    if (els.btnGenerateSynthetic) {
+      els.btnGenerateSynthetic.addEventListener("click", () => {
+        if (!state.rows.length) return;
+        const goal = els.syntheticGoal ? els.syntheticGoal.value.trim() : "";
+        const n = els.syntheticRowCount ? Number(els.syntheticRowCount.value) : 5000;
+        if (!goal.length) {
+          toast("Add a short goal for this synthetic dataset (what it will be used for).");
+          return;
+        }
+        if (!Number.isFinite(n) || n < 1 || n > 100000) {
+          toast("Row count must be between 1 and 100,000.");
+          return;
+        }
+        state.syntheticGoal = goal;
+        state.syntheticRowCount = Math.floor(n);
+        if (els.syntheticGenStatus) els.syntheticGenStatus.textContent = "Generating…";
+        let rows;
+        try {
+          rows = generateSyntheticRowsFromMetadata(state.syntheticRowCount, state.syntheticGoal);
+        } catch (err) {
+          console.error(err);
+          if (els.syntheticGenStatus) els.syntheticGenStatus.textContent = "";
+          toast(err.message || "Generation failed.");
+          return;
+        }
+        state.syntheticRows = rows;
+        state.syntheticGeneratedAtUtc = new Date().toISOString();
+        if (els.syntheticGenStatus) {
+          els.syntheticGenStatus.textContent = `Generated ${state.syntheticRows.length.toLocaleString()} rows.`;
+        }
+        if (els.btnDownloadSynthetic) els.btnDownloadSynthetic.classList.remove("hidden");
+        saveSession();
+        toast("Synthetic dataset ready. Continue to review or download CSV.");
+      });
+    }
+    if (els.btnDownloadSynthetic) {
+      els.btnDownloadSynthetic.addEventListener("click", () => downloadSyntheticCsv());
+    }
+    if (els.btnDownloadOriginalCsv) {
+      els.btnDownloadOriginalCsv.addEventListener("click", () => downloadOriginalCsvSnapshot());
     }
 
     if (els.btnBackSynthetic) {
@@ -3751,6 +4782,7 @@
           data: state.rows.map((r) => state.headers.map((h) => r[h] ?? "")),
         });
       }
+      if (!state.originalCsvText && state.rawText) state.originalCsvText = state.rawText;
       refreshUploadUI();
       els.btnContinue.disabled = false;
     }
