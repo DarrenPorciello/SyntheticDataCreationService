@@ -94,6 +94,33 @@ body {
   margin: 0.125rem 0 0;
 }
 
+.session-context {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.session-context-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-right: 0.35rem;
+}
+
+.session-context-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.session-name-field {
+  margin-bottom: 1rem;
+}
+
+.session-name-hint {
+  margin-top: 0.35rem;
+  margin-bottom: 0;
+}
+
 .stepper {
   display: flex;
   align-items: stretch;
@@ -1801,6 +1828,355 @@ body.printing-changes-report .no-print {
   }
 }
 
+/* Full-session print / Save as PDF (Finalize step) */
+.session-report-print-root {
+  display: none !important;
+}
+
+body.printing-session-report .app-header,
+body.printing-session-report #server-warning,
+body.printing-session-report main {
+  display: none !important;
+}
+
+body.printing-session-report .session-report-print-root,
+body.printing-session-report #session-report-print-root {
+  display: block !important;
+  position: static;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0.75rem 1rem 1.5rem;
+  background: #fff;
+  color: #111;
+}
+
+body.printing-session-report #session-report-print-root[hidden] {
+  display: block !important;
+}
+
+.session-report-doc {
+  max-width: 52rem;
+  margin: 0 auto;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: #1a1a1a;
+}
+
+.session-report-doc--professional {
+  font-family: Georgia, "Times New Roman", Times, serif;
+}
+
+.session-report-doc--professional .data-table,
+.session-report-doc--professional .session-report-data-table {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.78rem;
+}
+
+.session-report-doc--professional .panel,
+.session-report-doc--professional .meta-changes-block,
+.session-report-doc--professional .review-fidelity-card {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.session-report-hero {
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.1rem 1.15rem;
+  border: 1px solid #c5cbd3;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #fafbfc 0%, #fff 55%);
+}
+
+.session-report-kicker {
+  margin: 0 0 0.35rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5c6370;
+}
+
+.session-report-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+.session-report-subtitle {
+  margin: 0 0 0.85rem;
+  font-size: 0.9375rem;
+  color: #475569;
+  font-weight: 500;
+}
+
+.session-report-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 1.25rem;
+  margin: 0;
+  padding: 0.65rem 0 0;
+  border-top: 1px solid #e2e8f0;
+}
+
+.session-report-meta-item {
+  margin: 0;
+}
+
+.session-report-meta-item dt {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+}
+
+.session-report-meta-item dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.session-report-lead {
+  margin: 0 0 0.65rem;
+  font-size: 0.875rem;
+  color: #334155;
+}
+
+.session-report-table-wrap {
+  margin: 0.35rem 0 0.75rem;
+}
+
+.session-report-data-table {
+  border-collapse: collapse;
+}
+
+.session-report-data-table thead th {
+  background: #f1f5f9;
+  border-bottom: 2px solid #cbd5e1;
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+}
+
+.session-report-data-table tbody tr:nth-child(even) {
+  background: #f8fafc;
+}
+
+.session-report-data-table th,
+.session-report-data-table td {
+  border: 1px solid #e2e8f0;
+  padding: 0.35rem 0.5rem;
+}
+
+.session-report-dist-section {
+  break-inside: auto;
+}
+
+.session-report-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0.5rem 0 0.75rem;
+  font-size: 0.78rem;
+  color: #475569;
+}
+
+.session-report-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.session-report-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.session-report-swatch--orig {
+  background: rgba(14, 165, 233, 0.65);
+  border: 1px solid rgba(2, 132, 199, 0.9);
+}
+
+.session-report-swatch--synth {
+  background: rgba(252, 165, 165, 0.75);
+  border: 1px solid rgba(220, 38, 38, 0.85);
+}
+
+.session-report-dist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.session-report-dist-card {
+  break-inside: avoid;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 0.5rem;
+  background: #fff;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.session-report-dist-card .review-dist-card {
+  margin: 0;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.session-report-dist-card svg,
+.session-report-dist-card .review-dist-svg {
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.session-report-meta {
+  margin: 0;
+  color: #444;
+  font-size: 0.8125rem;
+}
+
+.report-print-banner {
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 2px solid #cbd5e1;
+}
+
+.report-print-kicker {
+  margin: 0 0 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.report-print-session-title,
+.meta-changes-print-title.report-print-session-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.report-print-doc-type {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.report-print-meta-line,
+.meta-changes-print-meta.report-print-meta-line {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: #64748b;
+}
+
+.session-report-block {
+  margin-bottom: 1.25rem;
+  break-inside: avoid;
+}
+
+.session-report-h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.session-report-h3 {
+  margin: 0.85rem 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.session-report-muted {
+  color: #555;
+  font-size: 0.875rem;
+}
+
+.session-report-issue-list {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.session-report-sev {
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #666;
+}
+
+.session-report-preview-wrap {
+  overflow-x: auto;
+}
+
+.session-report-json-pre {
+  max-height: none;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.65rem;
+  background: #f8f8f8;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.finalize-page-lead {
+  margin-bottom: 0.75rem;
+}
+
+.finalize-summary-lead {
+  margin-top: 0;
+}
+
+.finalize-report-actions {
+  margin: 1rem 0 0.25rem;
+}
+
+@media print {
+  body.printing-session-report .app-header,
+  body.printing-session-report #server-warning,
+  body.printing-session-report main {
+    display: none !important;
+  }
+
+  body.printing-session-report .session-report-print-root,
+  body.printing-session-report #session-report-print-root {
+    display: block !important;
+    padding: 0;
+  }
+
+  body.printing-session-report,
+  body.printing-session-report #session-report-print-root {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .session-report-block {
+    break-inside: avoid;
+  }
+
+  .session-report-dist-section {
+    break-inside: auto;
+  }
+
+  .session-report-dist-card {
+    break-inside: avoid;
+  }
+}
+
 .meta-dash-card--modified {
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow), inset 0 0 0 1px rgba(217, 119, 6, 0.4);
@@ -2692,6 +3068,71 @@ details.review-section > .review-section-summary::marker {
   font-weight: 600;
   white-space: nowrap;
   max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analyze-dashboard-root {
+  margin-top: 0.35rem;
+}
+
+.analyze-page-lead {
+  margin-bottom: 0.5rem;
+}
+
+.analyze-dash-stats {
+  margin-bottom: 0.85rem;
+}
+
+.analyze-goal-block {
+  margin-top: 0.15rem;
+}
+
+.analyze-synth-lead {
+  margin: 0.85rem 0 0.55rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.analyze-subtitle {
+  margin: 1.15rem 0 0.35rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.analyze-profile-wrap {
+  margin-top: 0.25rem;
+}
+
+.analyze-profile-table th[scope="row"] {
+  text-align: left;
+  font-weight: 600;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analyze-profile-summary {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.analyze-corr-lead {
+  margin: 0.25rem 0 0.45rem;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.analyze-corr-wrap {
+  margin-top: 0.25rem;
+}
+
+.analyze-corr-table th[scope="row"] {
+  text-align: left;
+  font-weight: 600;
+  max-width: 18rem;
   overflow: hidden;
   text-overflow: ellipsis;
 }

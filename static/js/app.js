@@ -8,8 +8,7 @@
     { id: "metadata", name: "Metadata", desc: "Schema & change summary" },
     { id: "synthetic", name: "Synthetic data", desc: "Generate" },
     { id: "review", name: "Review", desc: "Validate" },
-    { id: "analyze", name: "Analyze", desc: "Explore results" },
-    { id: "finalize", name: "Finalize", desc: "Complete workflow" },
+    { id: "finalize", name: "Finalize", desc: "Summary & report" },
   ];
 
   const METADATA_NOTE_SECTIONS = ["dashboard", "ai", "summary", "hygiene", "columns", "correlations", "distributions", "json"];
@@ -58,8 +57,12 @@
     "Finalizing…",
   ];
 
+  const SESSION_NAME_MAX_LEN = 120;
+
   let state = {
     step: 0,
+    /** User-defined label for this session (reports, header). */
+    sessionName: "",
     fileName: "",
     headers: [],
     rows: [],
@@ -149,6 +152,8 @@
     els.fileName = $("file-name");
     els.fileStats = $("file-stats");
     els.btnContinue = $("btn-continue");
+    els.sessionNameInput = $("session-name");
+    els.sessionContextTitle = $("session-context-title");
     els.btnReupload = $("btn-reupload");
     els.viewUpload = $("view-upload");
     els.viewInspect = $("view-inspect");
@@ -174,8 +179,10 @@
     els.reviewCompareRoot = $("review-compare-root");
     els.reviewAiCheckBody = $("review-ai-check-body");
     els.btnReviewAiCheck = $("btn-review-ai-check");
-    els.viewAnalyze = $("view-analyze");
+    els.analyzeDashboardRoot = $("analyze-dashboard-root");
     els.viewFinalize = $("view-finalize");
+    els.btnPrintSessionReport = $("btn-print-session-report");
+    els.sessionReportPrintRoot = $("session-report-print-root");
     els.btnBackUpload = $("btn-back-upload");
     els.agentBanner = $("agent-banner");
     els.agentSummary = $("agent-summary");
@@ -201,8 +208,6 @@
     els.btnProceedReview = $("btn-proceed-review");
     els.btnBackSynthetic = $("btn-back-synthetic");
     els.btnPrintMetadataChanges = $("btn-print-metadata-changes");
-    els.btnProceedAnalyze = $("btn-proceed-analyze");
-    els.btnBackAnalyze = $("btn-back-analyze");
     els.btnProceedFinalize = $("btn-proceed-finalize");
     els.btnBackFinalize = $("btn-back-finalize");
     els.metadataHygieneList = $("metadata-hygiene-list");
@@ -283,8 +288,34 @@
     return { headers: fields, rows };
   }
 
+  function getSessionDisplayTitle() {
+    const t = (state.sessionName || "").trim();
+    return t.length ? t : "Untitled session";
+  }
+
+  function normalizeSessionNameInput(raw) {
+    const s = (raw || "").replace(/\s+/g, " ").trim();
+    if (!s) return "";
+    return s.length > SESSION_NAME_MAX_LEN ? s.slice(0, SESSION_NAME_MAX_LEN) : s;
+  }
+
+  function renderSessionTitle() {
+    if (els.sessionContextTitle) {
+      const name = getSessionDisplayTitle();
+      els.sessionContextTitle.innerHTML = `<span class="session-context-label">Session</span><span class="session-context-name">${escapeHtml(name)}</span>`;
+    }
+    const raw = (state.sessionName || "").trim().slice(0, SESSION_NAME_MAX_LEN).replace(/[\u0000-\u001F<>]/g, "");
+    document.title = raw ? `${raw} — Synthetic Data Studio` : "Synthetic Data Studio — Southlake workflow";
+  }
+
+  function syncSessionNameInput() {
+    if (els.sessionNameInput) els.sessionNameInput.value = state.sessionName || "";
+    renderSessionTitle();
+  }
+
   function serializeState() {
     return JSON.stringify({
+      sessionName: normalizeSessionNameInput(state.sessionName),
       fileName: state.fileName,
       headers: state.headers,
       rows: state.rows,
@@ -315,6 +346,7 @@
       if (!raw) return false;
       const o = JSON.parse(raw);
       if (!o.headers || !o.rows) return false;
+      state.sessionName = typeof o.sessionName === "string" ? o.sessionName.slice(0, SESSION_NAME_MAX_LEN) : "";
       state.fileName = o.fileName || "dataset.csv";
       state.headers = o.headers;
       state.rows = o.rows;
@@ -2166,6 +2198,298 @@
     if (els.btnReviewAiCheck) els.btnReviewAiCheck.disabled = !state.syntheticRows.length;
   }
 
+  function buildAnalyzeDashboardHtml() {
+    const synth = state.syntheticRows;
+    if (!synth.length) {
+      return `<p class="panel-lead">No synthetic dataset in this session. Go back to <strong>Review</strong>, then <strong>Synthetic data</strong>, to generate a set.</p>`;
+    }
+    const inc = getColumnIncludeMap();
+    const colNames = state.headers.filter((h) => inc[h] !== false);
+    const n = synth.length;
+    const nCols = colNames.length;
+    let missing = 0;
+    const totalCells = n * nCols;
+    synth.forEach((r) => {
+      colNames.forEach((h) => {
+        const v = r[h];
+        if (v === "" || v == null) missing++;
+      });
+    });
+    const missPct = totalCells ? (missing / totalCells) * 100 : 0;
+    const stSynth = inferColumnStats(state.headers, synth);
+    let numN = 0;
+    let catN = 0;
+    colNames.forEach((h) => {
+      const st = stSynth.find((x) => x.name === h);
+      const k = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
+      if (k === "numeric") numN += 1;
+      else catN += 1;
+    });
+    const when = state.syntheticGeneratedAtUtc ? new Date(state.syntheticGeneratedAtUtc).toLocaleString() : "—";
+    const goal = (state.syntheticGoal || "").trim();
+    const goalBlock =
+      goal.length > 0
+        ? `<div class="review-goal-block analyze-goal-block"><strong>Synthesis goal:</strong> ${escapeHtml(
+            goal.length > 320 ? `${goal.slice(0, 317)}…` : goal
+          )}</div>`
+        : "";
+
+    const tableRows = colNames
+      .map((h) => {
+        const st = stSynth.find((x) => x.name === h);
+        const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
+        const pct = n && st ? ((st.nonNull / n) * 100).toFixed(1) : "0.0";
+        if (kind === "numeric") {
+          const s = summarizeNumericColumn(synth, h);
+          const sumStr = s
+            ? `μ ${formatReviewStat(s.mean, 3)} · σ ${formatReviewStat(s.std, 3)} · [${formatReviewStat(s.min)}, ${formatReviewStat(s.max)}]`
+            : "—";
+          return `<tr><th scope="row">${escapeHtml(h)}</th><td>Numeric</td><td>${pct}%</td><td class="analyze-profile-summary">${sumStr}</td></tr>`;
+        }
+        const tx = summarizeTextColumn(synth, h);
+        const topLab = escapeHtml(String(tx.topValue).slice(0, 40));
+        const sumStr = `distinct ${tx.distinct.toLocaleString()} · top ${topLab} (${tx.topPct.toFixed(1)}%)`;
+        return `<tr><th scope="row">${escapeHtml(h)}</th><td>Categorical</td><td>${pct}%</td><td class="analyze-profile-summary">${sumStr}</td></tr>`;
+      })
+      .join("");
+
+    const numNames = colNames.filter((h) => {
+      const st = stSynth.find((x) => x.name === h);
+      return st && effectiveColumnKind(st, getEditForCol(h)) === "numeric";
+    });
+    const numSlice = numNames.slice(0, NUMERIC_CORR_MAX_COLS);
+    let corrBlock = "";
+    if (numSlice.length >= 2) {
+      const { matrix, matrix_columns } = buildPearsonMatrixForColumns(numSlice, synth);
+      const pairs = [];
+      const k = matrix_columns.length;
+      for (let i = 0; i < k; i++) {
+        for (let j = i + 1; j < k; j++) {
+          const rv = matrix[i][j];
+          if (rv == null || Number.isNaN(rv)) continue;
+          pairs.push({ a: matrix_columns[i], b: matrix_columns[j], r: rv });
+        }
+      }
+      pairs.sort((a, b) => Math.abs(b.r) - Math.abs(a.r));
+      const top = pairs.slice(0, 10);
+      if (top.length) {
+        const trc = top
+          .map(
+            (p) =>
+              `<tr><th scope="row">${escapeHtml(p.a)} ↔ ${escapeHtml(p.b)}</th><td>${formatReviewStat(p.r, 3)}</td></tr>`
+          )
+          .join("");
+        corrBlock = `<h3 class="analyze-subtitle">Strongest correlations within the synthetic set</h3>
+          <p class="panel-lead analyze-corr-lead">Pearson <em>r</em> on pairwise-complete rows in <strong>synthetic</strong> data only (not vs. original).</p>
+          <div class="table-wrap analyze-corr-wrap"><table class="data-table analyze-corr-table"><thead><tr><th scope="col">Pair</th><th scope="col"><em>r</em></th></tr></thead><tbody>${trc}</tbody></table></div>`;
+      }
+    }
+
+    const lead = `This generated table has <strong>${n.toLocaleString()}</strong> rows and <strong>${nCols}</strong> included columns (<strong>${numN}</strong> numeric, <strong>${catN}</strong> categorical under current schema intent). About <strong>${missPct.toFixed(
+      1
+    )}%</strong> of cells are empty, driven by the metadata missingness pattern. Use the snapshot to spot odd scales or heavy categories before exporting.`;
+
+    return `<div class="review-dash-stats analyze-dash-stats">
+      <div class="stat-card"><div class="stat-value">${n.toLocaleString()}</div><div class="stat-label">Synthetic rows</div></div>
+      <div class="stat-card"><div class="stat-value">${nCols.toLocaleString()}</div><div class="stat-label">Included columns</div></div>
+      <div class="stat-card"><div class="stat-value">${numN} · ${catN}</div><div class="stat-label">Numeric · categorical</div></div>
+      <div class="stat-card"><div class="stat-value">${missPct.toFixed(1)}%</div><div class="stat-label">Empty cells (included)</div></div>
+      <div class="stat-card"><div class="stat-value">${when}</div><div class="stat-label">Generated at</div></div>
+    </div>
+    ${goalBlock}
+    <p class="panel-lead analyze-synth-lead">${lead}</p>
+    <h3 class="analyze-subtitle">Column snapshot</h3>
+    <div class="table-wrap analyze-profile-wrap"><table class="data-table analyze-profile-table"><thead><tr><th scope="col">Column</th><th scope="col">Role</th><th scope="col">Fill (non-null)</th><th scope="col">Summary (synthetic)</th></tr></thead><tbody>${tableRows}</tbody></table></div>
+    ${corrBlock}`;
+  }
+
+  function renderAnalyzePage() {
+    if (!els.analyzeDashboardRoot) return;
+    els.analyzeDashboardRoot.innerHTML = buildAnalyzeDashboardHtml();
+  }
+
+  function renderFinalizePage() {
+    renderAnalyzePage();
+  }
+
+  function buildMetadataSectionNotesForReport() {
+    const parts = [];
+    METADATA_NOTE_SECTIONS.forEach((sid) => {
+      const raw = (state.metadataSectionNotes && state.metadataSectionNotes[sid]) || "";
+      const t = raw.trim();
+      if (!t) return;
+      const title = METADATA_SECTION_NOTE_LABELS[sid] || sid;
+      parts.push(
+        `<section class="session-report-subblock"><h3 class="session-report-h3">${escapeHtml(title)}</h3><p class="session-report-note">${escapeHtml(
+          t
+        )}</p></section>`
+      );
+    });
+    if (!parts.length) {
+      return `<p class="panel-lead session-report-muted">No per-section notes were saved from the metadata accordion.</p>`;
+    }
+    return parts.join("");
+  }
+
+  function buildOriginalWorkingDataReportSection(colStats) {
+    const rows = state.rows;
+    const headers = state.headers;
+    const tbody = colStats
+      .map(
+        (c) =>
+          `<tr><th scope="row">${escapeHtml(c.name)}</th><td>${escapeHtml(c.inferred)}</td><td>${c.nonNull.toLocaleString()}</td><td>${c.missing.toLocaleString()}</td><td>${c.unique.toLocaleString()}</td></tr>`
+      )
+      .join("");
+    const limit = 20;
+    const th = headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("");
+    const tr = rows
+      .slice(0, limit)
+      .map(
+        (r) =>
+          `<tr>${headers.map((h) => `<td>${escapeHtml(String(r[h] ?? "").slice(0, 72))}</td>`).join("")}</tr>`
+      )
+      .join("");
+    return `<section class="session-report-block">
+      <h2 class="session-report-h2">1. Working original data</h2>
+      <p class="session-report-lead"><strong>File:</strong> ${escapeHtml(state.fileName || "dataset.csv")} · <strong>Rows:</strong> ${rows.length.toLocaleString()} · <strong>Columns:</strong> ${headers.length}</p>
+      <h3 class="session-report-h3">Column profile (inferred)</h3>
+      <div class="table-wrap session-report-table-wrap"><table class="data-table session-report-data-table"><thead><tr><th>Column</th><th>Inferred type</th><th>Non-null</th><th>Missing</th><th>Unique</th></tr></thead><tbody>${tbody}</tbody></table></div>
+      <h3 class="session-report-h3">Row preview (first ${limit} rows)</h3>
+      <div class="table-wrap session-report-preview-wrap session-report-table-wrap"><table class="data-table session-report-data-table"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>
+    </section>`;
+  }
+
+  function buildInspectionFindingsReportSection() {
+    const iss = state.issues || [];
+    if (!iss.length) {
+      return `<section class="session-report-block"><h2 class="session-report-h2">2. Data inspection findings</h2><p class="session-report-muted">No findings list in session (run inspection with the API for AI-assisted notes).</p></section>`;
+    }
+    const lis = iss
+      .map(
+        (i) =>
+          `<li><span class="session-report-sev">${escapeHtml(i.sev)}</span> <strong>${escapeHtml(i.title)}</strong> — ${escapeHtml(i.detail)}</li>`
+      )
+      .join("");
+    return `<section class="session-report-block"><h2 class="session-report-h2">2. Data inspection findings</h2><ul class="session-report-issue-list">${lis}</ul></section>`;
+  }
+
+  function buildSessionReportDistributionsHtml() {
+    if (!state.syntheticRows.length) return "";
+    const inc = getColumnIncludeMap();
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const blocks = [];
+    state.headers.forEach((h) => {
+      if (inc[h] === false) return;
+      const st = colStats.find((x) => x.name === h);
+      const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
+      let html = "";
+      if (kind === "numeric") {
+        html = buildReviewNumericOverlapSvgProportional(h, state.rows, state.syntheticRows);
+      } else {
+        html = buildReviewCategoryOverlapSvgProportional(h, state.rows, state.syntheticRows);
+      }
+      if (html) blocks.push(`<div class="session-report-dist-card">${html}</div>`);
+    });
+    if (!blocks.length) return "";
+    return `<section class="session-report-block session-report-dist-section">
+      <h2 class="session-report-h2">9b. Distribution comparison (original vs synthetic)</h2>
+      <p class="session-report-lead">Each chart matches the <strong>Review</strong> step: within-dataset proportions (blue = original share, red = synthetic share; overlap reads as purple). Colours are preserved in print where the browser allows.</p>
+      <div class="session-report-legend" aria-hidden="true">
+        <span class="session-report-legend-item"><span class="session-report-swatch session-report-swatch--orig"></span> Original (share)</span>
+        <span class="session-report-legend-item"><span class="session-report-swatch session-report-swatch--synth"></span> Synthetic (share)</span>
+      </div>
+      <div class="session-report-dist-grid">${blocks.join("")}</div>
+    </section>`;
+  }
+
+  function buildSessionReportHtml() {
+    if (!state.rows.length) {
+      return `<p>No data in this session.</p>`;
+    }
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const pkg = buildSyntheticMetadataPayload(state.headers, state.rows, colStats);
+    const frepSynth = state.syntheticRows.length ? computeSyntheticFidelityReport() : null;
+
+    let reviewAiBlock = "";
+    if (els.reviewAiCheckBody && els.reviewAiCheckBody.innerHTML.trim()) {
+      reviewAiBlock = `<section class="session-report-block"><h2 class="session-report-h2">10. Dataset-specific review assistant (last output in this tab)</h2><div class="session-report-embed">${els.reviewAiCheckBody.innerHTML}</div></section>`;
+    }
+
+    const metaChanges = buildMetadataChangesReviewHtml(pkg, colStats, { printMode: true, skipTopBanner: true });
+
+    let syntheticBlock = "";
+    if (!state.syntheticRows.length) {
+      syntheticBlock = `<section class="session-report-block"><h2 class="session-report-h2">8–9. Synthetic data &amp; review</h2><p class="session-report-muted">No synthetic dataset was generated in this session.</p></section>`;
+    } else {
+      const goalEsc = escapeHtml(state.syntheticGoal || "");
+      const whenSynth = state.syntheticGeneratedAtUtc
+        ? escapeHtml(new Date(state.syntheticGeneratedAtUtc).toLocaleString())
+        : "—";
+      syntheticBlock = `<section class="session-report-block">
+        <h2 class="session-report-h2">8. Synthetic generation</h2>
+        <p><strong>Goal:</strong> ${goalEsc || "<em>(none)</em>"}</p>
+        <p><strong>Requested row count:</strong> ${Number(state.syntheticRowCount || 0).toLocaleString()} · <strong>Generated rows:</strong> ${state.syntheticRows.length.toLocaleString()} · <strong>Generated at:</strong> ${whenSynth}</p>
+        <h2 class="session-report-h2">9. Original vs synthetic — review summaries</h2>
+        <p class="session-report-lead">Tables mirror the <strong>Review</strong> step. Section 9b embeds the same distribution graphics (SVG) as in the app.</p>
+        ${frepSynth ? `<div class="session-report-fidelity">${buildReviewFidelityHtml(frepSynth)}</div>` : ""}
+        <h3 class="session-report-h3">Column properties</h3>${buildReviewCompareHtml()}
+        <h3 class="session-report-h3">Numeric detail (percentiles &amp; spread)</h3>${buildReviewNumericDetailHtml()}
+        <h3 class="session-report-h3">Correlation comparison</h3>${buildReviewCorrelationCompareHtml(frepSynth)}
+      </section>${buildSessionReportDistributionsHtml()}`;
+    }
+
+    const sessionTitleEsc = escapeHtml(getSessionDisplayTitle());
+    return `<div class="session-report-doc session-report-doc--professional">
+      <header class="session-report-hero">
+        <p class="session-report-kicker">Synthetic Data Studio</p>
+        <h1 class="session-report-title">${sessionTitleEsc}</h1>
+        <p class="session-report-subtitle">Comprehensive session report</p>
+        <dl class="session-report-meta-grid">
+          <div class="session-report-meta-item"><dt>Source file</dt><dd>${escapeHtml(state.fileName || "dataset.csv")}</dd></div>
+          <div class="session-report-meta-item"><dt>Report generated</dt><dd>${escapeHtml(new Date().toLocaleString())}</dd></div>
+          <div class="session-report-meta-item"><dt>Working rows</dt><dd>${state.rows.length.toLocaleString()}</dd></div>
+          <div class="session-report-meta-item"><dt>Synthetic rows</dt><dd>${state.syntheticRows.length ? state.syntheticRows.length.toLocaleString() : "—"}</dd></div>
+        </dl>
+      </header>
+      ${buildOriginalWorkingDataReportSection(colStats)}
+      ${buildInspectionFindingsReportSection()}
+      <section class="session-report-block">
+        <h2 class="session-report-h2">3. Metadata accordion notes</h2>
+        <p class="panel-lead session-report-muted">Rationale typed into each accordion while editing metadata.</p>
+        ${buildMetadataSectionNotesForReport()}
+      </section>
+      <section class="session-report-block">
+        <h2 class="session-report-h2">4–7. Metadata change summary</h2>
+        <p class="panel-lead session-report-muted">Diffs, accepted coach items, change-summary reviewer notes per section, and full JSON export.</p>
+        ${metaChanges}
+      </section>
+      ${syntheticBlock}
+      ${reviewAiBlock}
+    </div>`;
+  }
+
+  function printSessionReport() {
+    if (!els.sessionReportPrintRoot) return;
+    if (!state.rows.length) {
+      toast("Load a dataset before printing a report.");
+      return;
+    }
+    els.sessionReportPrintRoot.innerHTML = buildSessionReportHtml();
+    els.sessionReportPrintRoot.hidden = false;
+    document.body.classList.add("printing-session-report");
+    const cleanup = () => {
+      document.body.classList.remove("printing-session-report");
+      els.sessionReportPrintRoot.hidden = true;
+      els.sessionReportPrintRoot.innerHTML = "";
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    window.setTimeout(() => {
+      window.print();
+      window.setTimeout(cleanup, 800);
+    }, 30);
+  }
+
   async function runReviewSyntheticAiCheck() {
     if (!els.btnReviewAiCheck || !els.reviewAiCheckBody) return;
     if (!state.syntheticRows.length) {
@@ -2986,18 +3310,27 @@
     return `<div class="meta-changes-carried-note"><span class="meta-changes-carried-label">From metadata step</span><p class="meta-changes-carried-body">${escapeHtml(t)}</p></div>`;
   }
 
-  function changeReviewSectionHtml(sectionId, title, innerBodyHtml) {
+  function changeReviewSectionHtml(sectionId, title, innerBodyHtml, options) {
     const carried = changeReviewCarriedNoteHtml(sectionId);
-    const noteWrap = `<div class="meta-section-note meta-changes-review-note"><label class="meta-section-note-label" for="chg-review-note-${sectionId}">Notes on why you made changes in this section (optional)</label><textarea id="chg-review-note-${sectionId}" class="meta-section-note-input" data-change-review-note="${escapeAttr(sectionId)}" rows="2" placeholder="Summarize rationale for reviewers or auditors…"></textarea></div>`;
+    const opt = options && typeof options === "object" ? options : {};
+    const printMode = opt.printMode === true;
+    const reviewNote = (state.metadataChangeReviewNotes && state.metadataChangeReviewNotes[sectionId]) || "";
+    const noteWrap = printMode
+      ? `<div class="meta-section-note meta-changes-review-note-print"><span class="meta-section-note-label">Reviewer notes (change summary)</span><p class="meta-changes-note-print-body">${
+          reviewNote.trim() ? escapeHtml(reviewNote.trim()) : "<em>(None.)</em>"
+        }</p></div>`
+      : `<div class="meta-section-note meta-changes-review-note"><label class="meta-section-note-label" for="chg-review-note-${sectionId}">Notes on why you made changes in this section (optional)</label><textarea id="chg-review-note-${sectionId}" class="meta-section-note-input" data-change-review-note="${escapeAttr(sectionId)}" rows="2" placeholder="Summarize rationale for reviewers or auditors…"></textarea></div>`;
     return `<section class="panel meta-changes-block meta-changes-section" data-change-section="${escapeAttr(sectionId)}"><h3 class="panel-title">${escapeHtml(title)}</h3>${carried}<div class="meta-changes-section-body">${innerBodyHtml}</div>${noteWrap}</section>`;
   }
 
-  function buildColumnsChangeReviewBody(colStats) {
+  function buildColumnsChangeReviewBody(colStats, options) {
+    const opt = options && typeof options === "object" ? options : {};
+    const printMode = opt.printMode === true;
     const inc = getColumnIncludeMap();
     const edits = state.columnMetadataEdits || {};
     const names = collectColumnsWithActivity(state.headers, inc, edits);
     const blocks = [];
-    if (state.headers.some((h) => inc[h] === false)) {
+    if (state.headers.some((h) => inc[h] === false) && !printMode) {
       blocks.push(
         `<div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert="exclusions">Revert all exclusions (include every column)</button></div>`
       );
@@ -3026,14 +3359,19 @@
             `<li class="meta-diff-row"><span class="meta-diff-field">${escapeHtml(it.field)}</span> <span class="meta-diff-pair"><span class="meta-diff-from">${escapeHtml(it.from)}</span><span class="meta-diff-arrow" aria-hidden="true">→</span><span class="meta-diff-to">${escapeHtml(it.to)}</span></span></li>`
         )
         .join("");
+      const revertRow = printMode
+        ? ""
+        : `<div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-column="${escapeAttr(col)}">Revert changes for this column</button></div>`;
       blocks.push(
-        `<div class="meta-changes-col-block"><h4 class="meta-changes-col-title"><code>${escapeHtml(col)}</code></h4><ul class="meta-changes-list meta-diff-list">${lis}</ul><div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-column="${escapeAttr(col)}">Revert changes for this column</button></div></div>`
+        `<div class="meta-changes-col-block"><h4 class="meta-changes-col-title"><code>${escapeHtml(col)}</code></h4><ul class="meta-changes-list meta-diff-list">${lis}</ul>${revertRow}</div>`
       );
     }
     return blocks.join("");
   }
 
-  function buildCorrelationsChangeReviewBody(colStats) {
+  function buildCorrelationsChangeReviewBody(colStats, options) {
+    const opt = options && typeof options === "object" ? options : {};
+    const printMode = opt.printMode === true;
     const corrEd = state.correlationEdits || {};
     const corrKeys = Object.keys(corrEd);
     if (!corrKeys.length) {
@@ -3055,14 +3393,21 @@
         }
         const syn = corrEd[key];
         const synStr = syn != null && Number.isFinite(Number(syn)) ? Number(syn).toFixed(4) : String(syn);
-        return `<tr><td><code>${escapeHtml(ca)}</code></td><td><code>${escapeHtml(cb)}</code></td><td class="meta-diff-from-cell">${escapeHtml(obs)}</td><td class="meta-diff-to-cell"><strong>${escapeHtml(synStr)}</strong></td><td class="no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-corr-a="${escapeAttr(ca)}" data-revert-corr-b="${escapeAttr(cb)}">Revert</button></td></tr>`;
+        const actionCell = printMode
+          ? ""
+          : `<td class="no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-corr-a="${escapeAttr(ca)}" data-revert-corr-b="${escapeAttr(cb)}">Revert</button></td>`;
+        return `<tr><td><code>${escapeHtml(ca)}</code></td><td><code>${escapeHtml(cb)}</code></td><td class="meta-diff-from-cell">${escapeHtml(obs)}</td><td class="meta-diff-to-cell"><strong>${escapeHtml(synStr)}</strong></td>${actionCell}</tr>`;
       })
       .filter(Boolean)
       .join("");
     if (!rows) {
       return `<p class="panel-lead meta-changes-lead-tight">Correlation overrides exist but are outside the current numeric matrix window.</p>`;
     }
-    return `<div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert="correlations">Revert all correlation targets</button></div><p class="panel-lead">Each row shows the <strong>observed</strong> Pearson <em>r</em> from your file and the <strong>synthetic target</strong> stored for generation.</p><div class="table-wrap"><table class="data-table meta-changes-table"><thead><tr><th>Column A</th><th>Column B</th><th>Before (observed <em>r</em>)</th><th>After (synthetic target)</th><th class="no-print"></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    const revertAll = printMode
+      ? ""
+      : `<div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert="correlations">Revert all correlation targets</button></div>`;
+    const thAction = printMode ? "" : `<th class="no-print"></th>`;
+    return `${revertAll}<p class="panel-lead">Each row shows the <strong>observed</strong> Pearson <em>r</em> from your file and the <strong>synthetic target</strong> stored for generation.</p><div class="table-wrap"><table class="data-table meta-changes-table"><thead><tr><th>Column A</th><th>Column B</th><th>Before (observed <em>r</em>)</th><th>After (synthetic target)</th>${thAction}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
   function syncChangeReviewNoteTextareas() {
@@ -4044,7 +4389,9 @@
     syncChangeReviewNoteTextareas();
   }
 
-  function buildAiCoachChangeReviewBody() {
+  function buildAiCoachChangeReviewBody(options) {
+    const opt = options && typeof options === "object" ? options : {};
+    const printMode = opt.printMode === true;
     const acc = state.metadataAiAccepted || [];
     if (!acc.length) {
       return `<p class="panel-lead meta-changes-lead-tight">No accepted coach recommendations.</p>`;
@@ -4063,20 +4410,26 @@
         const when = rec.accepted_at_utc
           ? escapeHtml(new Date(rec.accepted_at_utc).toLocaleString())
           : "\u2014";
+        const revertRow = printMode
+          ? ""
+          : `<div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-ai-id="${escapeAttr(rec.id)}">Remove acceptance</button></div>`;
         return `<div class="meta-changes-col-block meta-changes-ai-rec">
           <h4 class="meta-changes-col-title"><span class="metadata-ai-importance metadata-ai-importance--${imp}">${escapeHtml(imp)}</span> ${escapeHtml(String(rec.title || "Recommendation"))}</h4>
           ${colsHtml}
           <p class="panel-lead meta-changes-lead-tight">${escapeHtml(String(rec.detail || ""))}</p>
           ${act}
           <p class="meta-changes-ai-meta">Accepted ${when}</p>
-          <div class="meta-changes-revert-row no-print"><button type="button" class="btn btn-ghost btn-sm" data-revert-ai-id="${escapeAttr(rec.id)}">Remove acceptance</button></div>
+          ${revertRow}
         </div>`;
       })
       .join("");
     return `<p class="panel-lead">These coach tips are included in your synthesis metadata until you remove them. Column-scoped items also appear under <strong>Columns</strong>.</p>${blocks}`;
   }
 
-  function buildMetadataChangesReviewHtml(pkg, colStats) {
+  function buildMetadataChangesReviewHtml(pkg, colStats, options) {
+    const opt = options && typeof options === "object" ? options : {};
+    const printMode = opt.printMode === true;
+    const skipTopBanner = opt.skipTopBanner === true;
     const inner = [];
     let anySection = false;
 
@@ -4086,13 +4439,13 @@
       const title = METADATA_SECTION_NOTE_LABELS[sid] || sid;
       let body = "";
       if (sid === "columns") {
-        body = buildColumnsChangeReviewBody(colStats);
+        body = buildColumnsChangeReviewBody(colStats, opt);
       } else if (sid === "correlations") {
-        body = buildCorrelationsChangeReviewBody(colStats);
+        body = buildCorrelationsChangeReviewBody(colStats, opt);
       } else if (sid === "dashboard") {
         body = `<p class="panel-lead meta-changes-lead-tight">Synthetic numeric, categorical, or correlation targets were customized from profiling defaults. Column- and pair-level detail appears under <strong>Columns</strong> and <strong>Correlations</strong>.</p>`;
       } else if (sid === "ai") {
-        body = buildAiCoachChangeReviewBody();
+        body = buildAiCoachChangeReviewBody(opt);
       } else if (sid === "summary") {
         body = `<p class="panel-lead meta-changes-lead-tight">Summary figures on the metadata screen reflect your current include/exclude choices and column metadata edits.</p>`;
       } else if (sid === "distributions") {
@@ -4100,12 +4453,22 @@
       } else if (sid === "json") {
         body = `<p class="panel-lead meta-changes-lead-tight">The live JSON export on the metadata screen reflects all overrides listed in the sections above.</p>`;
       }
-      inner.push(changeReviewSectionHtml(sid, title, body));
+      inner.push(changeReviewSectionHtml(sid, title, body, opt));
     }
 
     if (!anySection) {
       inner.push(
         `<div class="panel meta-changes-block"><p class="panel-lead meta-changes-lead-tight">No manual overrides are recorded yet. When you exclude columns, edit field metadata, adjust synthetic targets, change correlation targets, or accept AI Metadata Agent recommendations, only the relevant sections will appear here.</p></div>`
+      );
+    } else if (printMode) {
+      const rawJson = JSON.stringify(pkg, null, 2);
+      const cap = 120000;
+      const jsonBody =
+        rawJson.length > cap
+          ? `${escapeHtml(rawJson.slice(0, cap))}\n\n… [JSON truncated for report length; full export available in the app.]`
+          : escapeHtml(rawJson);
+      inner.push(
+        `<section class="panel meta-changes-block"><h3 class="panel-title">Full synthesis metadata JSON (after your changes)</h3><pre class="metadata-json session-report-json-pre" aria-label="Metadata JSON after edits">${jsonBody}</pre></section>`
       );
     } else {
       inner.push(
@@ -4113,7 +4476,15 @@
       );
     }
 
-    const printBanner = `<div class="meta-changes-print-banner"><h1 class="meta-changes-print-title">Metadata change report</h1><p class="meta-changes-print-meta">${escapeHtml(state.fileName || "dataset.csv")} · ${escapeHtml(new Date().toLocaleString())}</p></div>`;
+    const sessionTitle = escapeHtml(getSessionDisplayTitle());
+    const printBanner = skipTopBanner
+      ? ""
+      : `<div class="meta-changes-print-banner report-print-banner">
+      <p class="report-print-kicker">Synthetic Data Studio</p>
+      <h1 class="meta-changes-print-title report-print-session-title">${sessionTitle}</h1>
+      <p class="report-print-doc-type">Metadata change report</p>
+      <p class="meta-changes-print-meta report-print-meta-line">${escapeHtml(state.fileName || "dataset.csv")} · ${escapeHtml(new Date().toLocaleString())}</p>
+    </div>`;
     return `${printBanner}${inner.join("")}`;
   }
 
@@ -4532,8 +4903,7 @@
     updateMetadataSplitViews();
     if (els.viewSynthetic) els.viewSynthetic.classList.toggle("hidden", n !== 3);
     if (els.viewReview) els.viewReview.classList.toggle("hidden", n !== 4);
-    if (els.viewAnalyze) els.viewAnalyze.classList.toggle("hidden", n !== 5);
-    if (els.viewFinalize) els.viewFinalize.classList.toggle("hidden", n !== 6);
+    if (els.viewFinalize) els.viewFinalize.classList.toggle("hidden", n !== 5);
     if (n === 1) renderInspect();
     if (n === 2) {
       if (state.metadataPane === "editor") renderMetadata();
@@ -4541,6 +4911,8 @@
     }
     if (n === 3) renderSyntheticPage();
     if (n === 4) renderReviewPage();
+    if (n === 5) renderFinalizePage();
+    renderSessionTitle();
   }
 
   function onFileLoaded(fileName, text) {
@@ -4925,6 +5297,20 @@
       setStep(1);
     });
 
+    if (els.sessionNameInput) {
+      els.sessionNameInput.addEventListener("input", () => {
+        state.sessionName = String(els.sessionNameInput.value || "").slice(0, SESSION_NAME_MAX_LEN);
+        saveSession();
+        renderSessionTitle();
+      });
+      els.sessionNameInput.addEventListener("blur", () => {
+        state.sessionName = normalizeSessionNameInput(els.sessionNameInput.value);
+        els.sessionNameInput.value = state.sessionName;
+        saveSession();
+        renderSessionTitle();
+      });
+    }
+
     els.btnReupload.addEventListener("click", () => {
       clearSession();
       state.rows = [];
@@ -4942,11 +5328,13 @@
       state.syntheticRowCount = 5000;
       state.syntheticRows = [];
       state.syntheticGeneratedAtUtc = null;
+      state.sessionName = "";
       resetMetadataAiCoachState();
       state.issues = [];
       els.fileMeta.classList.remove("is-visible");
       els.btnContinue.disabled = true;
       els.fileInput.value = "";
+      syncSessionNameInput();
       toast("Session cleared. Upload a new file.");
     });
 
@@ -5173,24 +5561,17 @@
       els.btnBackSynthetic.addEventListener("click", () => setStep(3));
     }
 
-    if (els.btnProceedAnalyze) {
-      els.btnProceedAnalyze.addEventListener("click", () => {
+    if (els.btnProceedFinalize) {
+      els.btnProceedFinalize.addEventListener("click", () => {
         if (!state.rows.length) return;
         setStep(5);
       });
     }
-
-    if (els.btnBackAnalyze) {
-      els.btnBackAnalyze.addEventListener("click", () => setStep(4));
-    }
-    if (els.btnProceedFinalize) {
-      els.btnProceedFinalize.addEventListener("click", () => {
-        if (!state.rows.length) return;
-        setStep(6);
-      });
-    }
     if (els.btnBackFinalize) {
-      els.btnBackFinalize.addEventListener("click", () => setStep(5));
+      els.btnBackFinalize.addEventListener("click", () => setStep(4));
+    }
+    if (els.btnPrintSessionReport) {
+      els.btnPrintSessionReport.addEventListener("click", () => printSessionReport());
     }
 
     els.stepper.addEventListener("click", (e) => {
@@ -5207,7 +5588,6 @@
       if (i === 3 && state.rows.length) setStep(3);
       if (i === 4 && state.rows.length) setStep(4);
       if (i === 5 && state.rows.length) setStep(5);
-      if (i === 6 && state.rows.length) setStep(6);
     });
   }
 
@@ -5280,6 +5660,7 @@
       refreshUploadUI();
       els.btnContinue.disabled = false;
     }
+    syncSessionNameInput();
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => void boot());

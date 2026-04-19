@@ -24,6 +24,7 @@
           <div>
             <h1 class="brand-title">Synthetic Data Studio</h1>
             <p class="brand-sub">Agent-assisted CSV intake, hygiene review, and (next) synthetic generation</p>
+            <p class="session-context" id="session-context-title" aria-live="polite"></p>
           </div>
         </div>
         <nav aria-label="Workflow progress">
@@ -41,6 +42,18 @@
             inspection, metadata, and comparison with synthetic output. Optional AI calls use small samples only;
             synthetic generation runs locally from your metadata package.
           </p>
+          <div class="modal-field session-name-field">
+            <label for="session-name">Session name</label>
+            <input
+              type="text"
+              id="session-name"
+              class="modal-input"
+              maxlength="120"
+              autocomplete="off"
+              placeholder="e.g. Q3 billing synthetic — dev test"
+            />
+            <p class="modal-hint session-name-hint">Used as the report title and in the header. Saved with your session (max 120 characters).</p>
+          </div>
           <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Upload CSV file">
             <div class="dropzone-icon" aria-hidden="true">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -592,17 +605,6 @@
         </div>
         <div class="actions">
           <button type="button" class="btn btn-ghost" id="btn-back-synthetic">Back to synthetic data</button>
-          <button type="button" class="btn btn-primary" id="btn-proceed-analyze">Continue to analyze</button>
-        </div>
-      </section>
-
-      <section id="view-analyze" class="hidden" aria-labelledby="analyze-heading">
-        <div class="panel">
-          <h2 class="panel-title" id="analyze-heading">Analyze</h2>
-          <p class="panel-lead">This step is reserved for deeper exploration of synthetic output and metadata alignment.</p>
-        </div>
-        <div class="actions">
-          <button type="button" class="btn btn-ghost" id="btn-back-analyze">Back to review</button>
           <button type="button" class="btn btn-primary" id="btn-proceed-finalize">Continue to finalize</button>
         </div>
       </section>
@@ -610,12 +612,37 @@
       <section id="view-finalize" class="hidden" aria-labelledby="finalize-heading">
         <div class="panel">
           <h2 class="panel-title" id="finalize-heading">Finalize</h2>
+          <p class="panel-lead finalize-page-lead">
+            Collapse the <strong>data summary</strong> when you want a shorter screen. Use <strong>Print / Save as PDF</strong> for a
+            full session document (original profile, inspection findings, metadata notes and change diffs, synthetic run, and review
+            tables). In the print dialog, choose <em>Save as PDF</em> where your browser supports it.
+          </p>
+          <details class="review-section finalize-data-summary" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Synthetic data summary</span>
+                <span class="review-section-meta">Scale, coverage, column snapshot, correlations within the generated set</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead finalize-summary-lead">
+                Same solo profile as before: counts, missingness, per-column stats on the <strong>synthetic</strong> table only.
+              </p>
+              <div id="analyze-dashboard-root" class="analyze-dashboard-root" aria-live="polite"></div>
+            </div>
+          </details>
+          <div class="finalize-report-actions no-print">
+            <button type="button" class="btn btn-secondary" id="btn-print-session-report">Print / Save as PDF…</button>
+          </div>
         </div>
-        <div class="actions">
-          <button type="button" class="btn btn-ghost" id="btn-back-finalize">Back to analyze</button>
+        <div class="actions no-print">
+          <button type="button" class="btn btn-ghost" id="btn-back-finalize">Back to review</button>
         </div>
       </section>
     </main>
+
+    <div id="session-report-print-root" class="session-report-print-root" hidden aria-hidden="true"></div>
 
     <div id="metadata-edit-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="metadata-edit-dialog-title" tabindex="-1">
       <div class="modal-backdrop" id="metadata-edit-backdrop"></div>
