@@ -2863,6 +2863,52 @@ details.review-section > .review-section-summary::marker {
   min-width: 0;
 }
 
+.review-section-heading--inline-icon {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.review-section-heading-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.review-assistant-sparkle {
+  flex-shrink: 0;
+  color: #6366f1;
+  margin-top: 0.12rem;
+  line-height: 0;
+}
+
+.review-sparkle-svg {
+  display: block;
+}
+
+.review-sparkle-svg--lg {
+  filter: drop-shadow(0 1px 2px rgba(79, 70, 229, 0.2));
+}
+
+.agent-avatar--sparkle {
+  background: linear-gradient(145deg, #eef2ff 0%, #e0e7ff 40%, #ddd6fe 100%);
+  color: #4338ca;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+}
+
+.review-assistant-banner {
+  margin-bottom: 0.75rem;
+}
+
+.review-assistant-banner .review-ai-intro {
+  margin-top: 0.35rem;
+}
+
+.review-assistant-banner .review-ai-actions {
+  margin-top: 0.75rem;
+}
+
 .review-section-title {
   font-size: 1rem;
   line-height: 1.25;
@@ -3245,4 +3291,126 @@ details.review-section > .review-section-summary::marker {
 .review-dist-axis-label--caption {
   fill: currentColor;
   opacity: 0.92;
+}
+
+/* —— Site navigation & multi-screen layout —— */
+.app-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.app-header-top .brand {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: min(100%, 220px);
+}
+
+.app-site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.app-site-nav-btn {
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  padding: 0.45rem 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.app-site-nav-btn:hover {
+  background: var(--blue-50);
+  border-color: var(--blue-200);
+}
+
+.app-site-nav-btn.is-active {
+  background: var(--blue-600);
+  border-color: var(--blue-600);
+  color: #fff;
+}
+
+.app-header-workflow {
+  margin-top: 0.75rem;
+}
+
+.home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.home-draft-hint {
+  margin-top: 1.25rem;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.btn-inline {
+  margin-left: 0.35rem;
+  vertical-align: baseline;
+}
+
+.finalize-report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.finalize-save-hint {
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.session-library-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.session-library-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.1rem;
+  background: var(--blue-50);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.session-library-name {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.session-library-sub {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.education-list {
+  margin: 1rem 0 0;
+  padding-left: 1.25rem;
+  color: var(--text);
+}
+
+.education-list li {
+  margin-bottom: 0.5rem;
 }

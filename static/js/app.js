@@ -1,7 +1,10 @@
 (function () {
   "use strict";
 
-  const STORAGE_KEY = "southlake_csv_session_v1";
+  const LEGACY_STORAGE_KEY = "southlake_csv_session_v1";
+  const ARCHIVE_STORAGE_PREFIX = "southlake_archive_v1:";
+  const CURRENT_ARCHIVE_ID_KEY = "southlake_current_archive_id_v1";
+
   const STEPS = [
     { id: "input", name: "Input data", desc: "Upload your CSV" },
     { id: "inspect", name: "Data inspection", desc: "Quality & summary" },
@@ -95,9 +98,75 @@
     /** Generated rows (same header order as state.headers) */
     syntheticRows: [],
     syntheticGeneratedAtUtc: null,
+    /** Per-browser workspace id; autosave writes to localStorage under this id. */
+    archiveId: "",
+    /** ISO timestamp set when the user saves from Finalize (listed in Library). */
+    librarySavedAt: null,
   };
 
   const els = {};
+
+  /** Which top-level screen is visible: home | create | library | education */
+  let currentAppScreen = "home";
+
+  function archiveStorageKey(archiveId) {
+    return ARCHIVE_STORAGE_PREFIX + archiveId;
+  }
+
+  function newSessionArchiveId() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    return `sl-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function readArchiveJson(archiveId) {
+    if (!archiveId) return null;
+    try {
+      const raw = localStorage.getItem(archiveStorageKey(archiveId));
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function persistCurrentArchivePointer() {
+    if (!state.archiveId) return;
+    try {
+      localStorage.setItem(CURRENT_ARCHIVE_ID_KEY, state.archiveId);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function migrateLegacyStorageIfNeeded() {
+    try {
+      const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (!raw) return;
+      const o = JSON.parse(raw);
+      const id = newSessionArchiveId();
+      const payload = Object.assign({}, o, {
+        archiveId: id,
+        librarySavedAt: null,
+        step: typeof o.step === "number" && Number.isFinite(o.step) ? o.step : 0,
+        _persistedAt: Date.now(),
+      });
+      if (!Array.isArray(payload.headers)) payload.headers = [];
+      if (!Array.isArray(payload.rows)) payload.rows = [];
+      localStorage.setItem(archiveStorageKey(id), JSON.stringify(payload));
+      localStorage.setItem(CURRENT_ARCHIVE_ID_KEY, id);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      try {
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
   /** Set in initApiBase(): FastAPI origin, or explicit meta URL, or default 127.0.0.1:8765. */
   let resolvedApiBase = "http://127.0.0.1:8765";
@@ -255,6 +324,19 @@
     els.btnResetColumnsSynth = $("btn-reset-columns-synth");
     els.btnResetCorrSynth = $("btn-reset-corr-synth");
     els.btnRevertDistributions = $("btn-revert-distributions");
+    els.screenHome = $("screen-home");
+    els.screenCreate = $("screen-create");
+    els.screenLibrary = $("screen-library");
+    els.screenEducation = $("screen-education");
+    els.appHeaderWorkflow = $("app-header-workflow");
+    els.sessionLibraryList = $("session-library-list");
+    els.sessionLibraryEmpty = $("session-library-empty");
+    els.btnSaveSessionLibrary = $("btn-save-session-library");
+    els.finalizeSaveStatus = $("finalize-save-status");
+    els.homeDraftHint = $("home-draft-hint");
+    els.btnHomeStartNew = $("btn-home-start-new");
+    els.btnHomeOpenLibrary = $("btn-home-open-library");
+    els.btnHomeContinue = $("btn-home-continue");
   }
 
   function toast(msg) {
@@ -313,8 +395,12 @@
     renderSessionTitle();
   }
 
-  function serializeState() {
-    return JSON.stringify({
+  function buildPersistEnvelope() {
+    const aid = state.archiveId || "";
+    return {
+      archiveId: aid,
+      librarySavedAt: state.librarySavedAt && typeof state.librarySavedAt === "string" ? state.librarySavedAt : null,
+      step: typeof state.step === "number" && Number.isFinite(state.step) ? state.step : 0,
       sessionName: normalizeSessionNameInput(state.sessionName),
       fileName: state.fileName,
       headers: state.headers,
@@ -337,60 +423,299 @@
           : 5000,
       syntheticRows: Array.isArray(state.syntheticRows) ? state.syntheticRows : [],
       syntheticGeneratedAtUtc: state.syntheticGeneratedAtUtc || null,
-    });
+    };
   }
 
-  function tryLoadSession() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return false;
-      const o = JSON.parse(raw);
-      if (!o.headers || !o.rows) return false;
-      state.sessionName = typeof o.sessionName === "string" ? o.sessionName.slice(0, SESSION_NAME_MAX_LEN) : "";
-      state.fileName = o.fileName || "dataset.csv";
-      state.headers = o.headers;
-      state.rows = o.rows;
-      state.rawText = o.rawText || "";
-      state.columnInclude = o.columnInclude && typeof o.columnInclude === "object" ? o.columnInclude : null;
-      state.columnMetadataEdits =
-        o.columnMetadataEdits && typeof o.columnMetadataEdits === "object" ? o.columnMetadataEdits : {};
-      state.correlationEdits = o.correlationEdits && typeof o.correlationEdits === "object" ? o.correlationEdits : {};
-      state.metadataPane = o.metadataPane === "changesReview" ? "changesReview" : "editor";
-      state.metadataSectionNotes =
-        o.metadataSectionNotes && typeof o.metadataSectionNotes === "object" ? o.metadataSectionNotes : {};
-      state.metadataChangeReviewNotes =
-        o.metadataChangeReviewNotes && typeof o.metadataChangeReviewNotes === "object" ? o.metadataChangeReviewNotes : {};
-      state.metadataAiLastRun =
-        o.metadataAiLastRun && typeof o.metadataAiLastRun === "object" && Array.isArray(o.metadataAiLastRun.items)
-          ? {
-              runId: o.metadataAiLastRun.runId,
-              summary: String(o.metadataAiLastRun.summary || ""),
-              items: o.metadataAiLastRun.items,
-            }
-          : null;
-      state.metadataAiAccepted = Array.isArray(o.metadataAiAccepted) ? o.metadataAiAccepted : [];
-      state.originalCsvText = typeof o.originalCsvText === "string" ? o.originalCsvText : "";
-      state.syntheticGoal = typeof o.syntheticGoal === "string" ? o.syntheticGoal : "";
-      state.syntheticRowCount =
-        typeof o.syntheticRowCount === "number" && Number.isFinite(o.syntheticRowCount) ? o.syntheticRowCount : 5000;
-      state.syntheticRows = Array.isArray(o.syntheticRows) ? o.syntheticRows : [];
-      state.syntheticGeneratedAtUtc = o.syntheticGeneratedAtUtc || null;
-      return true;
-    } catch {
-      return false;
-    }
+  function serializeState() {
+    return JSON.stringify(buildPersistEnvelope());
+  }
+
+  function applyPersistedPayload(o) {
+    if (!o || typeof o !== "object") return false;
+    state.librarySavedAt = typeof o.librarySavedAt === "string" && o.librarySavedAt ? o.librarySavedAt : null;
+    state.step =
+      typeof o.step === "number" && Number.isFinite(o.step)
+        ? Math.max(0, Math.min(Math.floor(o.step), STEPS.length - 1))
+        : 0;
+    state.sessionName = typeof o.sessionName === "string" ? o.sessionName.slice(0, SESSION_NAME_MAX_LEN) : "";
+    state.fileName = o.fileName || "dataset.csv";
+    state.headers = Array.isArray(o.headers) ? o.headers : [];
+    state.rows = Array.isArray(o.rows) ? o.rows : [];
+    state.rawText = o.rawText || "";
+    state.columnInclude = o.columnInclude && typeof o.columnInclude === "object" ? o.columnInclude : null;
+    state.columnMetadataEdits =
+      o.columnMetadataEdits && typeof o.columnMetadataEdits === "object" ? o.columnMetadataEdits : {};
+    state.correlationEdits = o.correlationEdits && typeof o.correlationEdits === "object" ? o.correlationEdits : {};
+    state.metadataPane = o.metadataPane === "changesReview" ? "changesReview" : "editor";
+    state.metadataSectionNotes =
+      o.metadataSectionNotes && typeof o.metadataSectionNotes === "object" ? o.metadataSectionNotes : {};
+    state.metadataChangeReviewNotes =
+      o.metadataChangeReviewNotes && typeof o.metadataChangeReviewNotes === "object" ? o.metadataChangeReviewNotes : {};
+    state.metadataAiLastRun =
+      o.metadataAiLastRun && typeof o.metadataAiLastRun === "object" && Array.isArray(o.metadataAiLastRun.items)
+        ? {
+            runId: o.metadataAiLastRun.runId,
+            summary: String(o.metadataAiLastRun.summary || ""),
+            items: o.metadataAiLastRun.items,
+          }
+        : null;
+    state.metadataAiAccepted = Array.isArray(o.metadataAiAccepted) ? o.metadataAiAccepted : [];
+    state.originalCsvText = typeof o.originalCsvText === "string" ? o.originalCsvText : "";
+    state.syntheticGoal = typeof o.syntheticGoal === "string" ? o.syntheticGoal : "";
+    state.syntheticRowCount =
+      typeof o.syntheticRowCount === "number" && Number.isFinite(o.syntheticRowCount) ? o.syntheticRowCount : 5000;
+    state.syntheticRows = Array.isArray(o.syntheticRows) ? o.syntheticRows : [];
+    state.syntheticGeneratedAtUtc = o.syntheticGeneratedAtUtc || null;
+    if (typeof o.archiveId === "string" && o.archiveId) state.archiveId = o.archiveId;
+    return true;
   }
 
   function saveSession() {
     try {
-      localStorage.setItem(STORAGE_KEY, serializeState());
+      if (!state.archiveId) state.archiveId = newSessionArchiveId();
+      const env = buildPersistEnvelope();
+      env.archiveId = state.archiveId;
+      env._persistedAt = Date.now();
+      localStorage.setItem(archiveStorageKey(state.archiveId), JSON.stringify(env));
+      persistCurrentArchivePointer();
     } catch {
       toast("Could not persist dataset in browser storage.");
     }
   }
 
+  /** Removes only the legacy single-key store if present (migration handled elsewhere). */
   function clearSession() {
-    localStorage.removeItem(STORAGE_KEY);
+    try {
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function destroyRuntimeCharts() {
+    destroyChartList(state.charts || []);
+    destroyChartList(state.metaCharts || []);
+    destroyChartList(state.reviewCharts || []);
+  }
+
+  function startNewSession() {
+    destroyRuntimeCharts();
+    const nextId = newSessionArchiveId();
+    state.step = 0;
+    state.sessionName = "";
+    state.fileName = "";
+    state.headers = [];
+    state.rows = [];
+    state.rawText = "";
+    state.originalCsvText = "";
+    state.issues = [];
+    state.charts = [];
+    state.metaCharts = [];
+    state.reviewCharts = [];
+    state.columnInclude = null;
+    state.columnMetadataEdits = {};
+    state.correlationEdits = {};
+    state.metadataPane = "editor";
+    state.metadataSectionNotes = {};
+    state.metadataChangeReviewNotes = {};
+    state.syntheticGoal = "";
+    state.syntheticRowCount = 5000;
+    state.syntheticRows = [];
+    state.syntheticGeneratedAtUtc = null;
+    state.librarySavedAt = null;
+    state.archiveId = nextId;
+    resetMetadataAiCoachState();
+    persistCurrentArchivePointer();
+    saveSession();
+    if (els.fileMeta) els.fileMeta.classList.remove("is-visible");
+    if (els.btnContinue) els.btnContinue.disabled = true;
+    if (els.fileInput) els.fileInput.value = "";
+    syncSessionNameInput();
+    renderSessionTitle();
+    updateHomeDraftHint();
+  }
+
+  function loadCurrentArchiveOrNew() {
+    const currentId = localStorage.getItem(CURRENT_ARCHIVE_ID_KEY);
+    if (currentId) {
+      const o = readArchiveJson(currentId);
+      if (o) {
+        applyPersistedPayload(o);
+        state.archiveId = currentId;
+        const Papa = window.Papa;
+        if (state.rows.length && !state.rawText && state.headers.length) {
+          state.rawText = Papa.unparse({
+            fields: state.headers,
+            data: state.rows.map((r) => state.headers.map((h) => r[h] ?? "")),
+          });
+        }
+        if (state.rows.length && !state.originalCsvText && state.rawText) state.originalCsvText = state.rawText;
+        if (state.rows.length) {
+          refreshUploadUI();
+          if (els.btnContinue) els.btnContinue.disabled = false;
+        } else {
+          if (els.fileMeta) els.fileMeta.classList.remove("is-visible");
+          if (els.btnContinue) els.btnContinue.disabled = true;
+        }
+        return;
+      }
+    }
+    state.archiveId = newSessionArchiveId();
+    persistCurrentArchivePointer();
+    saveSession();
+  }
+
+  function loadArchiveSession(archiveId) {
+    const o = readArchiveJson(archiveId);
+    if (!o) {
+      toast("That session could not be loaded.");
+      return false;
+    }
+    destroyRuntimeCharts();
+    applyPersistedPayload(o);
+    state.archiveId = archiveId;
+    const Papa = window.Papa;
+    if (state.rows.length && !state.rawText && state.headers.length) {
+      state.rawText = Papa.unparse({
+        fields: state.headers,
+        data: state.rows.map((r) => state.headers.map((h) => r[h] ?? "")),
+      });
+    }
+    if (state.rows.length && !state.originalCsvText && state.rawText) state.originalCsvText = state.rawText;
+    if (!state.rows.length) state.step = 0;
+    else
+      state.step = Math.max(0, Math.min(typeof state.step === "number" ? state.step : 0, STEPS.length - 1));
+    persistCurrentArchivePointer();
+    saveSession();
+    if (state.rows.length) {
+      refreshUploadUI();
+      if (els.btnContinue) els.btnContinue.disabled = false;
+    } else {
+      if (els.fileMeta) els.fileMeta.classList.remove("is-visible");
+      if (els.btnContinue) els.btnContinue.disabled = true;
+    }
+    syncSessionNameInput();
+    renderSessionTitle();
+    return true;
+  }
+
+  function listSavedSessionsMeta() {
+    const out = [];
+    const seen = new Set();
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k || !k.startsWith(ARCHIVE_STORAGE_PREFIX)) continue;
+        try {
+          const o = JSON.parse(localStorage.getItem(k) || "{}");
+          if (!o || !o.librarySavedAt) continue;
+          const idFromKey = k.slice(ARCHIVE_STORAGE_PREFIX.length);
+          if (seen.has(idFromKey)) continue;
+          seen.add(idFromKey);
+          out.push({
+            archiveId: idFromKey,
+            sessionName: (o.sessionName || "").trim() ? String(o.sessionName).trim().slice(0, SESSION_NAME_MAX_LEN) : "Untitled session",
+            fileName: o.fileName || "dataset.csv",
+            librarySavedAt: o.librarySavedAt,
+            rowCount: Array.isArray(o.rows) ? o.rows.length : 0,
+          });
+        } catch {
+          /* skip */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    out.sort((a, b) => String(b.librarySavedAt).localeCompare(String(a.librarySavedAt)));
+    return out;
+  }
+
+  function renderSessionLibraryList() {
+    if (!els.sessionLibraryList || !els.sessionLibraryEmpty) return;
+    const items = listSavedSessionsMeta();
+    if (!items.length) {
+      els.sessionLibraryList.innerHTML = "";
+      els.sessionLibraryEmpty.classList.remove("hidden");
+      return;
+    }
+    els.sessionLibraryEmpty.classList.add("hidden");
+    els.sessionLibraryList.innerHTML = items
+      .map(
+        (m) => `<li class="session-library-item" data-archive-id="${escapeAttr(m.archiveId)}">
+            <div class="session-library-meta">
+              <strong class="session-library-name">${escapeHtml(m.sessionName)}</strong>
+              <span class="session-library-sub">${escapeHtml(m.fileName)} · ${m.rowCount.toLocaleString()} rows · ${escapeHtml(
+          new Date(m.librarySavedAt).toLocaleString()
+        )}</span>
+            </div>
+            <button type="button" class="btn btn-primary session-library-open">Open</button>
+          </li>`
+      )
+      .join("");
+  }
+
+  function navTargetForScreen(screen) {
+    if (screen === "create") return "create-new";
+    if (screen === "library") return "library";
+    return screen;
+  }
+
+  function setSiteNavActive(screen) {
+    const t = navTargetForScreen(screen);
+    document.querySelectorAll(".app-site-nav-btn").forEach((b) => {
+      b.classList.toggle("is-active", b.getAttribute("data-app-screen") === t);
+    });
+  }
+
+  function showAppScreen(screen) {
+    currentAppScreen = screen;
+    if (els.screenHome) els.screenHome.classList.toggle("hidden", screen !== "home");
+    if (els.screenCreate) els.screenCreate.classList.toggle("hidden", screen !== "create");
+    if (els.screenLibrary) els.screenLibrary.classList.toggle("hidden", screen !== "library");
+    if (els.screenEducation) els.screenEducation.classList.toggle("hidden", screen !== "education");
+    if (els.appHeaderWorkflow) els.appHeaderWorkflow.classList.toggle("hidden", screen !== "create");
+    setSiteNavActive(screen);
+  }
+
+  function enterStudio() {
+    showAppScreen("create");
+    const maxStep = state.rows.length ? STEPS.length - 1 : 0;
+    const step = Math.max(0, Math.min(typeof state.step === "number" ? state.step : 0, maxStep));
+    setStep(step);
+    updateHomeDraftHint();
+  }
+
+  function startNewSessionAndEnter() {
+    startNewSession();
+    enterStudio();
+    setStep(0);
+  }
+
+  function saveSessionToLibrary() {
+    if (!state.rows.length) {
+      toast("Upload a dataset before saving to the library.");
+      return;
+    }
+    state.librarySavedAt = nowIso();
+    saveSession();
+    updateFinalizeSaveStatus();
+    updateHomeDraftHint();
+    toast("Session saved. Open it anytime from Library.");
+  }
+
+  function updateFinalizeSaveStatus() {
+    if (!els.finalizeSaveStatus) return;
+    if (!state.librarySavedAt) {
+      els.finalizeSaveStatus.textContent = "";
+      return;
+    }
+    els.finalizeSaveStatus.textContent = `Saved to this browser’s library on ${new Date(state.librarySavedAt).toLocaleString()}.`;
+  }
+
+  function updateHomeDraftHint() {
+    if (!els.homeDraftHint) return;
+    const has = state.rows && state.rows.length > 0;
+    els.homeDraftHint.classList.toggle("hidden", !has);
   }
 
   function inferColumnStats(headers, rows) {
@@ -1994,7 +2319,7 @@
       return `<div class="review-fidelity-card"><p class="panel-lead">${frep.bullets.map((b) => `${b}`).join(" ")}</p></div>`;
     }
     const blis = frep.bullets.map((b) => `<li>${b}</li>`).join("");
-    return `<div class="review-fidelity-card" role="region" aria-label="Fidelity score and rationale">
+    return `<div class="review-fidelity-card" role="region" aria-label="Fidelity metric and rationale">
       <div class="review-fidelity-score-row">
         <div class="review-fidelity-score" aria-label="Fidelity score ${frep.score} out of 100">${frep.score}<span class="review-fidelity-score-max">/100</span></div>
         <div class="review-fidelity-tier"><span class="review-fidelity-tier-label">${escapeHtml(frep.tier)}</span><span class="review-fidelity-tier-hint">heuristic blend</span></div>
@@ -2310,6 +2635,7 @@
 
   function renderFinalizePage() {
     renderAnalyzePage();
+    updateFinalizeSaveStatus();
   }
 
   function buildMetadataSectionNotesForReport() {
@@ -4913,6 +5239,11 @@
     if (n === 4) renderReviewPage();
     if (n === 5) renderFinalizePage();
     renderSessionTitle();
+    if (n !== prev) {
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    }
   }
 
   function onFileLoaded(fileName, text) {
@@ -4926,6 +5257,7 @@
     state.syntheticRowCount = 5000;
     state.syntheticRows = [];
     state.syntheticGeneratedAtUtc = null;
+    state.librarySavedAt = null;
     saveSession();
     els.fileMeta.classList.add("is-visible");
     els.fileName.textContent = fileName;
@@ -4938,6 +5270,7 @@
     state.metadataSectionNotes = {};
     state.metadataChangeReviewNotes = {};
     resetMetadataAiCoachState();
+    updateHomeDraftHint();
   }
 
   function renderInspectStatic(colStats) {
@@ -5312,7 +5645,7 @@
     }
 
     els.btnReupload.addEventListener("click", () => {
-      clearSession();
+      destroyRuntimeCharts();
       state.rows = [];
       state.headers = [];
       state.fileName = "";
@@ -5329,12 +5662,19 @@
       state.syntheticRows = [];
       state.syntheticGeneratedAtUtc = null;
       state.sessionName = "";
+      state.librarySavedAt = null;
+      state.step = 0;
       resetMetadataAiCoachState();
       state.issues = [];
       els.fileMeta.classList.remove("is-visible");
       els.btnContinue.disabled = true;
       els.fileInput.value = "";
       syncSessionNameInput();
+      clearSession();
+      saveSession();
+      renderStepper();
+      setStep(0);
+      updateHomeDraftHint();
       toast("Session cleared. Upload a new file.");
     });
 
@@ -5573,6 +5913,53 @@
     if (els.btnPrintSessionReport) {
       els.btnPrintSessionReport.addEventListener("click", () => printSessionReport());
     }
+    if (els.btnSaveSessionLibrary) {
+      els.btnSaveSessionLibrary.addEventListener("click", () => saveSessionToLibrary());
+    }
+
+    document.querySelectorAll(".app-site-nav-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const target = btn.getAttribute("data-app-screen");
+        if (target === "home") {
+          updateHomeDraftHint();
+          showAppScreen("home");
+        } else if (target === "create-new") {
+          startNewSessionAndEnter();
+        } else if (target === "library") {
+          renderSessionLibraryList();
+          showAppScreen("library");
+        } else if (target === "education") {
+          showAppScreen("education");
+        }
+      });
+    });
+
+    if (els.btnHomeStartNew) {
+      els.btnHomeStartNew.addEventListener("click", () => startNewSessionAndEnter());
+    }
+    if (els.btnHomeOpenLibrary) {
+      els.btnHomeOpenLibrary.addEventListener("click", () => {
+        renderSessionLibraryList();
+        showAppScreen("library");
+      });
+    }
+    if (els.btnHomeContinue) {
+      els.btnHomeContinue.addEventListener("click", () => enterStudio());
+    }
+
+    if (els.sessionLibraryList) {
+      els.sessionLibraryList.addEventListener("click", (e) => {
+        const open = e.target.closest(".session-library-open");
+        if (!open) return;
+        const li = open.closest("[data-archive-id]");
+        const id = li && li.getAttribute("data-archive-id");
+        if (!id) return;
+        if (loadArchiveSession(id)) {
+          enterStudio();
+          toast("Session loaded.");
+        }
+      });
+    }
 
     els.stepper.addEventListener("click", (e) => {
       const item = e.target.closest(".stepper-item");
@@ -5644,23 +6031,16 @@
 
   async function boot() {
     initEls();
+    migrateLegacyStorageIfNeeded();
+    loadCurrentArchiveOrNew();
     await initApiBase();
     bindEvents();
     renderStepper();
     await checkApiServer();
-    if (tryLoadSession() && state.rows.length) {
-      const Papa = window.Papa;
-      if (!state.rawText && state.headers.length) {
-        state.rawText = Papa.unparse({
-          fields: state.headers,
-          data: state.rows.map((r) => state.headers.map((h) => r[h] ?? "")),
-        });
-      }
-      if (!state.originalCsvText && state.rawText) state.originalCsvText = state.rawText;
-      refreshUploadUI();
-      els.btnContinue.disabled = false;
-    }
     syncSessionNameInput();
+    updateHomeDraftHint();
+    updateFinalizeSaveStatus();
+    showAppScreen("home");
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => void boot());
