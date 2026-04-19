@@ -327,7 +327,7 @@ def _normalize_review_points(raw: list) -> list[ReviewSyntheticPointOut]:
     out: list[ReviewSyntheticPointOut] = []
     if not isinstance(raw, list):
         return out
-    for item in raw[:12]:
+    for item in raw[:4]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title", "")).strip() or "Note"
@@ -343,7 +343,7 @@ def _normalize_issues(raw: list) -> list[IssueOut]:
     out: list[IssueOut] = []
     if not isinstance(raw, list):
         return out
-    for item in raw[:20]:
+    for item in raw[:4]:
         if not isinstance(item, dict):
             continue
         sev = str(item.get("sev", "low")).lower()
@@ -410,13 +410,13 @@ You receive: file metadata, per-column counts/types, a small sample of rows, and
 
 Your job:
 1. Write a concise executive summary (2–4 sentences) for a non-technical stakeholder about data hygiene and synthetic-data readiness.
-2. Produce a prioritized list of hygiene / quality issues. The **issues** array MUST contain **at least 1** item—even if the data look clean (use a single low-severity synthetic-readiness or documentation nudge). You may rephrase, merge, or refine deterministic_findings, add important issues the code missed, and drop clear false positives. Use severity: high, medium, or low.
+2. Produce a prioritized list of hygiene / quality issues (**at most 4**). The **issues** array MUST contain **at least 1** item—even if the data look clean (use a single low-severity synthetic-readiness or documentation nudge). You may rephrase, merge, or refine deterministic_findings, add important issues the code missed, and drop clear false positives. Use severity: high, medium, or low.
 3. For EACH issue, add "suggested_fix": 1–3 short sentences stating plainly what the system does **for this dataset** when the user saves that fix into the session (e.g. "Adds this remediation to synthesis metadata so synthetic data and reports follow it.", "Documents that row-level cleanup should use Apply fixes (trim / dedupe) and carries that intent in the session package."). Write as direct facts—no "if you accept" or "when you click Accept" framing. Be accurate: saving persists guidance in metadata; it does not silently rewrite their CSV unless they use separate fix actions. Use an empty string only if no reasonable system-side outcome exists.
 
 Respond with ONLY valid JSON matching this shape (no markdown fences):
 {"summary": string, "issues": [{"sev": "high"|"medium"|"low", "title": string, "detail": string, "suggested_fix": string}]}
 
-**issues** must be a non-empty array (minimum length 1).
+**issues** must be a non-empty array (minimum length 1, **maximum 4** — prioritize the most important items only).
 
 If sample data might resemble real people, avoid repeating exact identifiers in titles; refer to column names instead where possible."""
 
@@ -465,6 +465,7 @@ If sample data might resemble real people, avoid repeating exact identifiers in 
         )
         for i in issues
     ]
+    issues = issues[:4]
 
     return QualityAnalyzeResponse(summary=summary[:4000], issues=issues)
 
@@ -550,7 +551,7 @@ Respond with ONLY valid JSON (no markdown, no code fences):
 
 **summary** — One or two short sentences in plain, confident language: what stands out about their metadata and how ready it looks for synthetic generation. No jargon about systems or infrastructure.
 
-**suggestions** — Between **1 and 4** objects (never an empty array). Always return **at least one** tip, even if it is minimal or low impact (e.g. confirm types, add a short synthesis note, sanity-check an identifier column, or acknowledge the profile looks good with one small refinement). Prefer higher-impact items first when they exist.
+**suggestions** — **Exactly 1 to 4** objects (never an empty array, never more than 4). Always return **at least one** tip, even if it is minimal or low impact (e.g. confirm types, add a short synthesis note, sanity-check an identifier column, or acknowledge the profile looks good with one small refinement). Prefer higher-impact items first when they exist.
 
 Each suggestion object:
 {"title": string, "detail": string, "importance": "high"|"medium"|"low", "related_columns": string[], "suggested_action": string}
@@ -606,6 +607,8 @@ Rules: Never invent column names. Avoid repeating the same idea twice. Do not me
             )
         ]
 
+    suggestions = suggestions[:4]
+
     return MetadataSuggestResponse(summary=summary[:1200], suggestions=suggestions)
 
 
@@ -659,7 +662,7 @@ You receive JSON only (no raw database): file name, row counts, a short user goa
 
 Your job:
 1. Write a **summary** (3–5 sentences) tuned to **this** dataset: what looks aligned, what diverges, and what a human reviewer should double-check before trusting the synthetic file for their intended use (testing, demos, modeling, etc.). Speak plainly; avoid repeating the numeric tables verbatim.
-2. Return **points**: 4–8 short review bullets. Each item: title (≤12 words), detail (1–2 sentences), sev high|medium|low based on practical risk to misuse (not statistical p-values). Cover correlation structure, tails/percentiles if implied by deltas, category cardinality shifts, and row-count mismatch when relevant. If the sample might resemble real people, do not quote exact values from cells; refer to columns instead.
+2. Return **points**: **1 to 4** short review bullets (never more than 4). Each item: title (≤12 words), detail (1–2 sentences), sev high|medium|low based on practical risk to misuse (not statistical p-values). Cover correlation structure, tails/percentiles if implied by deltas, category cardinality shifts, and row-count mismatch when relevant. If the sample might resemble real people, do not quote exact values from cells; refer to columns instead.
 
 Respond with ONLY valid JSON (no markdown fences):
 {"summary": string, "points": [{"title": string, "detail": string, "sev": "high"|"medium"|"low"}]}"""
@@ -690,7 +693,7 @@ Respond with ONLY valid JSON (no markdown fences):
         raise HTTPException(status_code=502, detail=f"Model returned invalid JSON: {e}") from e
 
     summary = str(data.get("summary", "")).strip() or "Review complete."
-    points = _normalize_review_points(data.get("points", []))
+    points = _normalize_review_points(data.get("points", []))[:4]
     if not points:
         points = [
             ReviewSyntheticPointOut(

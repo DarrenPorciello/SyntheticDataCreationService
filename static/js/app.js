@@ -435,7 +435,10 @@
       fileName: state.fileName,
       headers: state.headers,
       rows: state.rows,
-      rawText: state.rawText,
+      rawText:
+        state.rows && state.rows.length > 0 && state.headers && state.headers.length > 0
+          ? ""
+          : state.rawText || "",
       columnInclude: state.columnInclude,
       columnMetadataEdits: state.columnMetadataEdits || {},
       correlationEdits: state.correlationEdits || {},
@@ -443,7 +446,11 @@
       metadataSectionNotes: state.metadataSectionNotes && typeof state.metadataSectionNotes === "object" ? state.metadataSectionNotes : {},
       metadataChangeReviewNotes:
         state.metadataChangeReviewNotes && typeof state.metadataChangeReviewNotes === "object" ? state.metadataChangeReviewNotes : {},
-      metadataAiLastRun: state.metadataAiLastRun && typeof state.metadataAiLastRun === "object" ? state.metadataAiLastRun : null,
+      metadataAiLastRun: (() => {
+        const r = state.metadataAiLastRun;
+        if (!r || typeof r !== "object" || !Array.isArray(r.items)) return null;
+        return { runId: r.runId, summary: String(r.summary || ""), items: r.items.slice(0, 4) };
+      })(),
       metadataAiAccepted: Array.isArray(state.metadataAiAccepted) ? state.metadataAiAccepted : [],
       inspectionHygieneAccepted: Array.isArray(state.inspectionHygieneAccepted) ? state.inspectionHygieneAccepted : [],
       originalCsvText: state.originalCsvText || "",
@@ -487,7 +494,7 @@
         ? {
             runId: o.metadataAiLastRun.runId,
             summary: String(o.metadataAiLastRun.summary || ""),
-            items: o.metadataAiLastRun.items,
+            items: o.metadataAiLastRun.items.slice(0, 4),
           }
         : null;
     state.metadataAiAccepted = Array.isArray(o.metadataAiAccepted) ? o.metadataAiAccepted : [];
@@ -509,6 +516,15 @@
     state.syntheticRows = Array.isArray(o.syntheticRows) ? o.syntheticRows : [];
     state.syntheticGeneratedAtUtc = o.syntheticGeneratedAtUtc || null;
     if (typeof o.archiveId === "string" && o.archiveId) state.archiveId = o.archiveId;
+    if (state.rows.length && state.headers.length && (!state.rawText || !String(state.rawText).trim())) {
+      const Papa = window.Papa;
+      if (Papa && typeof Papa.unparse === "function") {
+        state.rawText = Papa.unparse({
+          fields: state.headers,
+          data: state.rows.map((r) => state.headers.map((h) => r[h] ?? "")),
+        });
+      }
+    }
     return true;
   }
 
@@ -518,10 +534,39 @@
       const env = buildPersistEnvelope();
       env.archiveId = state.archiveId;
       env._persistedAt = Date.now();
-      localStorage.setItem(archiveStorageKey(state.archiveId), JSON.stringify(env));
+      const key = archiveStorageKey(state.archiveId);
+      const payload = JSON.stringify(env);
+      try {
+        localStorage.setItem(key, payload);
+      } catch (e) {
+        const isQuota =
+          e &&
+          (e.name === "QuotaExceededError" ||
+            e.code === 22 ||
+            (typeof DOMException !== "undefined" && e instanceof DOMException && e.name === "QuotaExceededError"));
+        if (isQuota && Array.isArray(env.syntheticRows) && env.syntheticRows.length > 0) {
+          const slim = Object.assign({}, env, {
+            syntheticRows: [],
+            syntheticGeneratedAtUtc: null,
+            _syntheticRowsOmittedForQuota: true,
+            _persistedAt: Date.now(),
+          });
+          localStorage.setItem(key, JSON.stringify(slim));
+          state.syntheticRows = [];
+          state.syntheticGeneratedAtUtc = null;
+          toast(
+            "Browser storage was almost full; saved without synthetic rows. Download the synthetic CSV from the Synthetic step if you need that file."
+          );
+        } else {
+          throw e;
+        }
+      }
       persistCurrentArchivePointer();
-    } catch {
+      return true;
+    } catch (e) {
+      console.error(e);
       toast("Could not persist dataset in browser storage.");
+      return false;
     }
   }
 
@@ -741,8 +786,13 @@
       toast("Upload a dataset before saving to the library.");
       return;
     }
+    const prevLib = state.librarySavedAt;
     state.librarySavedAt = nowIso();
-    saveSession();
+    if (!saveSession()) {
+      state.librarySavedAt = prevLib || null;
+      toast("Could not write to browser storage. Free space (remove old Library sessions or site data) and try Save again.");
+      return;
+    }
     updateFinalizeSaveStatus();
     updateHomeDraftHint();
     toast("Session saved. Open it anytime from Library.");
@@ -5403,7 +5453,6 @@
     state.syntheticRows = [];
     state.syntheticGeneratedAtUtc = null;
     state.librarySavedAt = null;
-    saveSession();
     els.fileMeta.classList.add("is-visible");
     els.fileName.textContent = fileName;
     els.fileStats.textContent = `${rows.length.toLocaleString()} rows · ${headers.length} columns`;
@@ -5416,6 +5465,7 @@
     state.metadataChangeReviewNotes = {};
     resetMetadataAiCoachState();
     state.inspectionHygieneAccepted = [];
+    saveSession();
     updateHomeDraftHint();
   }
 
@@ -5495,7 +5545,7 @@
         throw new Error(msg || `Request failed (${res.status})`);
       }
       els.agentSummary.textContent = raw.summary || "Assessment complete.";
-      const fromApi = (raw.issues || []).map((i) => ({
+      const fromApi = (raw.issues || []).slice(0, 4).map((i) => ({
         sev: sevClass(i.sev),
         title: String(i.title || "Finding"),
         detail: String(i.detail || ""),
@@ -5517,7 +5567,7 @@
           " You are hitting Python's static file server (e.g. python -m http.server), which does not allow POST. Stop it and run python server.py instead, then reload this page from that address.";
       }
       els.agentSummary.textContent = `Could not reach the AI API (${reason}).${hint}`;
-      state.issues = attachHygieneIssueIds(ruleIssues);
+      state.issues = attachHygieneIssueIds(ruleIssues.slice(0, 4));
       pruneInspectionHygieneAcceptedToIssues(state.issues);
       renderIssueList();
       if (els.btnRetryAi) els.btnRetryAi.classList.remove("hidden");
@@ -6168,6 +6218,10 @@
       if (i === 3 && state.rows.length) setStep(3);
       if (i === 4 && state.rows.length) setStep(4);
       if (i === 5 && state.rows.length) setStep(5);
+    });
+
+    window.addEventListener("beforeunload", () => {
+      saveSession();
     });
   }
 

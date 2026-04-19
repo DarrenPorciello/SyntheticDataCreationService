@@ -55,46 +55,79 @@
 
     <main>
       <div id="screen-home" class="app-screen">
-        <div class="panel home-panel">
-          <h2 class="home-welcome">Welcome</h2>
-          <p class="panel-lead home-intro">
-            <strong>Synthetix</strong> walks you from a real CSV to a governed synthetic dataset: upload your file, run data inspection
-            (with optional AI hygiene notes), shape column metadata and distributions, then generate new rows locally from that package.
-            Review outputs against your original profile, print a full session report, and save finished sessions to your
-            <strong>library</strong> in this browser—everything stays on your machine unless you choose small samples for analysis.
-          </p>
-          <div class="home-actions">
-            <button type="button" class="btn btn-primary" id="btn-home-start-new">Start new session</button>
-            <button type="button" class="btn btn-secondary" id="btn-home-open-library">Open library</button>
-          </div>
-          <p class="home-draft-hint hidden" id="home-draft-hint">
-            You have a session in progress.
-            <button type="button" class="btn btn-inline" id="btn-home-continue">Continue editing</button>
-          </p>
+        <div class="home-landing">
+          <header class="home-hero">
+            <h2 class="home-welcome-brand">Welcome</h2>
+            <h3 class="home-tagline">Trustworthy Synthetic Data</h3>
+            <p class="home-lead">
+              Synthetix is an AI-powered synthetic data studio built for healthcare professionals. It prioritizes accountability,
+              transparency, and trust, so you can generate high-quality data without compromising privacy.
+            </p>
+          </header>
+
+          <section class="home-features" aria-labelledby="home-features-heading">
+            <h2 id="home-features-heading" class="home-section-heading">How it works</h2>
+            <div class="home-feature-grid">
+              <article class="home-feature-card">
+                <span class="home-feature-icon" aria-hidden="true">01</span>
+                <h4 class="home-feature-title">Upload &amp; Inspect</h4>
+                <p class="home-feature-text">
+                  Upload your dataset and explore it through clear summaries, column-level statistics, and previews. Synthetix also
+                  highlights potential data quality issues to help you better understand and refine your inputs.
+                </p>
+              </article>
+              <article class="home-feature-card">
+                <span class="home-feature-icon" aria-hidden="true">02</span>
+                <h4 class="home-feature-title">Metadata &amp; Synthesis</h4>
+                <p class="home-feature-text">
+                  Define how your data should behave. Adjust distributions, relationships, and field-level characteristics, then
+                  generate synthetic data that reflects the structure and patterns of your original dataset.
+                </p>
+              </article>
+              <article class="home-feature-card">
+                <span class="home-feature-icon" aria-hidden="true">03</span>
+                <h4 class="home-feature-title">Review &amp; Archive</h4>
+                <p class="home-feature-text">
+                  Compare synthetic data against the original, validate accuracy, and export detailed reports. Save your sessions
+                  locally to reuse for testing, demos, or documentation without exposing sensitive data.
+                </p>
+              </article>
+            </div>
+          </section>
+
+          <section class="home-cta" aria-label="Start or resume">
+            <div class="home-actions">
+              <button type="button" class="btn btn-primary" id="btn-home-start-new">Start new session</button>
+              <button type="button" class="btn btn-secondary" id="btn-home-open-library">Open library</button>
+            </div>
+            <p class="home-draft-hint hidden" id="home-draft-hint">
+              You have a session in progress.
+              <button type="button" class="btn btn-inline" id="btn-home-continue">Continue editing</button>
+            </p>
+          </section>
         </div>
       </div>
 
       <div id="screen-create" class="app-screen hidden" aria-label="Workflow">
-      <section id="view-upload" class="view-upload" aria-labelledby="upload-heading">
+      <section id="view-upload" class="view-upload" aria-labelledby="session-name-heading upload-heading">
         <div class="panel">
-          <h2 class="panel-title" id="upload-heading">Upload data set</h2>
-          <p class="panel-lead">
-            Upload a comma-separated file. The <strong>original CSV text</strong> is kept in this browser session for
-            inspection, metadata, and comparison with synthetic output. Optional AI calls use small samples only;
-            synthetic generation runs locally from your metadata package.
-          </p>
-          <div class="modal-field session-name-field">
-            <label for="session-name">Session name</label>
+          <div class="modal-field session-name-field session-name-field--prominent">
+            <label for="session-name" id="session-name-heading" class="session-name-label">Session name</label>
             <input
               type="text"
               id="session-name"
-              class="modal-input"
+              class="modal-input session-name-input"
               maxlength="120"
               autocomplete="off"
-              placeholder="e.g. Q3 billing synthetic — dev test"
+              placeholder="e.g. Newmarket community health data"
             />
-            <p class="modal-hint session-name-hint">Used as the report title and in the header. Saved with your session (max 120 characters).</p>
+            <p class="modal-hint session-name-hint">Shown in the header and reports. Saved with your session (up to 120 characters).</p>
           </div>
+          <h2 class="panel-title" id="upload-heading">Upload data set</h2>
+          <p class="panel-lead">
+            Upload a CSV from your computer. Your file stays in this browser for inspection, metadata, and the rest of the
+            workflow.
+          </p>
           <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Upload CSV file">
             <div class="dropzone-icon" aria-hidden="true">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -754,19 +787,87 @@
       </div>
 
       <div id="screen-education" class="app-screen hidden" aria-label="Education">
-        <div class="panel">
-          <h2 class="panel-title">Education</h2>
-          <p class="panel-lead">
-            This studio walks through upload, automated inspection, rich metadata editing (including distributions and correlations), local synthetic generation, validation, and a printable session report.
-            Optional AI features use your local API only; CSV content stays in the browser unless you choose to send small samples for analysis.
-          </p>
-          <ul class="education-list">
-            <li><strong>Input</strong> — Upload UTF-8 CSV and name your session for reports.</li>
-            <li><strong>Inspection</strong> — Structural stats, charts, and optional AI hygiene notes.</li>
-            <li><strong>Metadata</strong> — Refine column semantics and synthetic targets before generation.</li>
-            <li><strong>Synthetic</strong> — Generate rows locally from your metadata package.</li>
-            <li><strong>Review &amp; finalize</strong> — Compare to the original profile, then save or print.</li>
-          </ul>
+        <div class="education-landing">
+          <header class="education-hero">
+            <h2 class="education-welcome-brand">Synthetic data</h2>
+            <h3 class="education-tagline">What it is, and why healthcare teams use it</h3>
+            <div class="education-lead">
+              <p>
+                <strong>Synthetic data</strong> are artificial rows that mirror the statistics of a real table (distributions,
+                correlations, categories, missingness) without copying real individuals. They substitute for sensitive production
+                extracts in builds, tests, and training.
+              </p>
+              <p>
+                In healthcare they enable safer <strong>sharing, integration tests, teaching, and demos</strong>, and they show
+                how tools behave on plausible tables while supporting <strong>accountability and transparency</strong>.
+              </p>
+              <p>
+                When <strong>real data are scarce</strong>, synthetic data still supports <strong>population-level</strong>
+                insight (plausible ranges and relationships) for planning and software without pooling more PHI.
+              </p>
+            </div>
+          </header>
+
+          <section class="education-faq" aria-labelledby="education-faq-heading">
+            <h2 id="education-faq-heading" class="education-faq-heading">FAQ</h2>
+            <div class="education-faq-list">
+              <details class="education-faq-item">
+                <summary class="education-faq-summary">What is synthetic healthcare data?</summary>
+                <div class="education-faq-answer">
+                  <p>
+                    It is tabular or record-level data that <strong>imitates the patterns</strong> of clinical or operational
+                    data (labs, diagnoses, utilization, costs) while remaining <strong>non-attributable</strong> to real people
+                    when produced with sound methods and validation. It is not the same as redacting names from a real file; the
+                    rows themselves are new.
+                  </p>
+                </div>
+              </details>
+              <details class="education-faq-item">
+                <summary class="education-faq-summary">How does synthetic data improve privacy?</summary>
+                <div class="education-faq-answer">
+                  <p>
+                    Because rows are <strong>generated</strong> rather than sampled from PHI, you avoid shipping identifiable
+                    records to every engineer or partner. Risk is further reduced when generation is <strong>governed by
+                    metadata</strong> you control, when outputs are checked against disclosure rules, and when only small
+                    samples (if any) leave a controlled environment for optional AI assistance.
+                  </p>
+                </div>
+              </details>
+              <details class="education-faq-item">
+                <summary class="education-faq-summary">Can synthetic data replace real data for every use?</summary>
+                <div class="education-faq-answer">
+                  <p>
+                    <strong>No.</strong> It is best for development, testing, education, and some forms of analysis where
+                    approximate structure is enough. For regulatory submissions, clinical decisions, or rare-outcome science,
+                    teams still rely on real, consented, and governed sources, and use synthetic data to <strong>accelerate
+                    everything around</strong> those strict workflows.
+                  </p>
+                </div>
+              </details>
+              <details class="education-faq-item">
+                <summary class="education-faq-summary">How is synthetic data different from de-identified data?</summary>
+                <div class="education-faq-answer">
+                  <p>
+                    <strong>De-identified</strong> data are still derived from real people; identifiers are removed or
+                    generalized, but rows can sometimes be re-linked under attack. <strong>Synthetic</strong> data aim to
+                    preserve usefulness for modeling or testing while <strong>breaking one-to-one linkage</strong> to real
+                    individuals, especially when combined with validation and disclosure review.
+                  </p>
+                </div>
+              </details>
+              <details class="education-faq-item">
+                <summary class="education-faq-summary">Where does a tool like Synthetix fit?</summary>
+                <div class="education-faq-answer">
+                  <p>
+                    Synthetix is a <strong>browser-local studio</strong> for turning a CSV into a governed metadata package and
+                    then generating synthetic rows <strong>on your machine</strong>, with optional AI for inspection and metadata
+                    hints. It emphasizes transparency in what you changed, what you generated, and what you saved, so teams can
+                    pair synthetic outputs with clear documentation for stakeholders.
+                  </p>
+                </div>
+              </details>
+            </div>
+          </section>
         </div>
       </div>
     </main>

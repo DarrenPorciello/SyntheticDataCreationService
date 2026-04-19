@@ -163,6 +163,32 @@ body {
   margin-bottom: 1rem;
 }
 
+.session-name-field--prominent {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-name-field--prominent .session-name-label {
+  display: block;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 0.45rem;
+  letter-spacing: -0.02em;
+}
+
+.session-name-field--prominent .session-name-input {
+  font-size: 1.0625rem;
+  padding: 0.6rem 0.85rem;
+  margin-bottom: 0.35rem;
+}
+
+.session-name-field--prominent .session-name-hint {
+  font-size: 0.8125rem;
+  margin-top: 0.55rem;
+}
+
 .session-name-hint {
   margin-top: 0.35rem;
   margin-bottom: 0;
@@ -3481,31 +3507,192 @@ details.review-section > .review-section-summary::marker {
   border-top: none;
 }
 
-.home-welcome {
-  font-size: clamp(1.75rem, 4vw, 2.25rem);
+/* ——— Home landing ——— */
+#screen-home.app-screen {
+  padding-top: 0.25rem;
+}
+
+.home-landing {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.home-hero {
+  position: relative;
+  padding: 2rem 0 1.75rem;
+  border-radius: calc(var(--radius) + 4px);
+  margin-bottom: 1.5rem;
+}
+
+/* Backdrop only wraps the welcome block — fixed height was drawing past the lead and swallowing “How it works”. */
+.home-hero::before {
+  content: "";
+  position: absolute;
+  top: -1rem;
+  left: -1.25rem;
+  right: -1.25rem;
+  bottom: -0.85rem;
+  border-radius: calc(var(--radius) + 8px);
+  background:
+    radial-gradient(ellipse 90% 70% at 12% -10%, rgba(14, 165, 233, 0.18), transparent 55%),
+    radial-gradient(ellipse 70% 55% at 88% 0%, rgba(56, 189, 248, 0.12), transparent 50%),
+    linear-gradient(165deg, rgba(255, 255, 255, 0.92) 0%, rgba(248, 250, 252, 0.65) 100%);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: var(--shadow);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.home-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* “Welcome” — same gradient treatment as .brand-title */
+.home-welcome-brand {
+  margin: 0 0 0.35rem;
+  font-size: clamp(2.85rem, 9vw, 4.25rem);
   font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1.12;
-  margin: 0 0 0.75rem;
+  letter-spacing: -0.055em;
+  line-height: 1.02;
+  font-family: var(--font);
+  color: #0c4a6e;
+  background: linear-gradient(118deg, #0f172a 8%, #0c4a6e 42%, #0369a1 78%, #0ea5e9 110%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .home-welcome-brand {
+    background: none;
+    -webkit-text-fill-color: unset;
+    color: #0c4a6e;
+  }
+}
+
+.home-tagline {
+  margin: 0 0 1.15rem;
+  font-size: clamp(1.65rem, 4.2vw, 2.35rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+  color: #0f172a;
+  font-family: var(--font);
+}
+
+.home-lead {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--text-muted);
+  max-width: 68ch;
+}
+
+/* Same font scale as before; same gradient / clip as “Welcome” (.home-welcome-brand). */
+.home-section-heading {
+  margin: 0 0 0.65rem;
+  font-size: clamp(1.2rem, 2.5vw, 1.45rem);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  font-family: var(--font);
+  color: #0c4a6e;
+  background: linear-gradient(118deg, #0f172a 8%, #0c4a6e 42%, #0369a1 78%, #0ea5e9 110%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .home-section-heading {
+    background: none;
+    -webkit-text-fill-color: unset;
+    color: #0c4a6e;
+  }
+}
+
+.home-features {
+  padding: 0 0 2rem;
+}
+
+.home-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+@media (max-width: 900px) {
+  .home-feature-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.home-feature-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.35rem;
+  box-shadow: var(--shadow);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.home-feature-card:hover {
+  border-color: rgba(14, 165, 233, 0.25);
+  box-shadow: 0 4px 28px rgba(15, 23, 42, 0.08);
+}
+
+.home-feature-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--blue-700);
+  background: var(--blue-50);
+  border-radius: 10px;
+  border: 1px solid var(--blue-100);
+}
+
+.home-feature-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   color: var(--text);
 }
 
-.home-intro {
-  font-size: 0.9375rem;
-  line-height: 1.6;
-  max-width: 62ch;
-  margin-bottom: 1.35rem;
+.home-feature-text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.home-cta {
+  margin-top: 0.25rem;
+  padding: 1.5rem 1.5rem 1.35rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
 .home-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  margin-top: 0.35rem;
+  align-items: center;
 }
 
 .home-draft-hint {
-  margin-top: 1.25rem;
+  margin-top: 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
   font-size: 0.875rem;
   color: var(--text-muted);
 }
@@ -3559,14 +3746,201 @@ details.review-section > .review-section-summary::marker {
   color: var(--text-muted);
 }
 
-.education-list {
-  margin: 1rem 0 0;
-  padding-left: 1.25rem;
-  color: var(--text);
+/* ——— Education (mirrors home landing rhythm) ——— */
+#screen-education.app-screen {
+  padding-top: 0.25rem;
 }
 
-.education-list li {
-  margin-bottom: 0.5rem;
+.education-landing {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.education-hero {
+  position: relative;
+  padding: 2rem 0 1.75rem;
+  border-radius: calc(var(--radius) + 4px);
+  margin-bottom: 1.5rem;
+}
+
+.education-hero::before {
+  content: "";
+  position: absolute;
+  top: -1rem;
+  left: -1.25rem;
+  right: -1.25rem;
+  bottom: -0.85rem;
+  border-radius: calc(var(--radius) + 8px);
+  background:
+    radial-gradient(ellipse 90% 70% at 12% -10%, rgba(14, 165, 233, 0.18), transparent 55%),
+    radial-gradient(ellipse 70% 55% at 88% 0%, rgba(56, 189, 248, 0.12), transparent 50%),
+    linear-gradient(165deg, rgba(255, 255, 255, 0.92) 0%, rgba(248, 250, 252, 0.65) 100%);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: var(--shadow);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.education-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.education-welcome-brand {
+  margin: 0 0 0.35rem;
+  font-size: clamp(2.85rem, 9vw, 4rem);
+  font-weight: 700;
+  letter-spacing: -0.055em;
+  line-height: 1.02;
+  font-family: var(--font);
+  color: #0c4a6e;
+  background: linear-gradient(118deg, #0f172a 8%, #0c4a6e 42%, #0369a1 78%, #0ea5e9 110%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .education-welcome-brand {
+    background: none;
+    -webkit-text-fill-color: unset;
+    color: #0c4a6e;
+  }
+}
+
+.education-tagline {
+  margin: 0 0 1.15rem;
+  font-size: clamp(1.65rem, 4.2vw, 2.35rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+  color: #0f172a;
+  font-family: var(--font);
+}
+
+.education-lead {
+  margin: 0;
+  max-width: 68ch;
+}
+
+.education-lead p {
+  margin: 0 0 1rem;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--text-muted);
+}
+
+.education-lead p:last-child {
+  margin-bottom: 0;
+}
+
+.education-lead strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.education-faq {
+  padding: 0 0 2.5rem;
+}
+
+.education-faq-heading {
+  margin: 0 0 0.85rem;
+  font-size: clamp(1.2rem, 2.5vw, 1.45rem);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  font-family: var(--font);
+  color: #0c4a6e;
+  background: linear-gradient(118deg, #0f172a 8%, #0c4a6e 42%, #0369a1 78%, #0ea5e9 110%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .education-faq-heading {
+    background: none;
+    -webkit-text-fill-color: unset;
+    color: #0c4a6e;
+  }
+}
+
+.education-faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.education-faq-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.education-faq-item:hover {
+  border-color: rgba(14, 165, 233, 0.22);
+}
+
+.education-faq-item[open] {
+  border-color: rgba(14, 165, 233, 0.28);
+  box-shadow: 0 4px 28px rgba(15, 23, 42, 0.08);
+}
+
+.education-faq-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 1.1rem 2.5rem 1.1rem 1.35rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  position: relative;
+}
+
+.education-faq-summary::-webkit-details-marker {
+  display: none;
+}
+
+.education-faq-summary::after {
+  content: "";
+  position: absolute;
+  right: 1.35rem;
+  top: 50%;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-top: -0.2rem;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: rotate(45deg);
+  transition: transform 0.2s ease, margin-top 0.2s ease;
+}
+
+.education-faq-item[open] .education-faq-summary::after {
+  margin-top: 0.05rem;
+  transform: rotate(-135deg);
+}
+
+.education-faq-answer {
+  padding: 0 1.35rem 1.2rem;
+  border-top: 1px solid var(--border);
+}
+
+.education-faq-answer p {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.education-faq-answer p:first-child {
+  margin-top: 0.65rem;
+}
+
+.education-faq-answer strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 /* —— Fixed workflow “AI learning” mark (Create step transitions) —— */
