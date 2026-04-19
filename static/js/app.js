@@ -24,7 +24,7 @@
     json: "Technical JSON export",
   };
 
-  const METADATA_SCHEMA_VERSION = "1.4";
+  const METADATA_SCHEMA_VERSION = "1.5";
 
   const COLUMN_SYNTH_EDIT_KEYS = [
     "synthDist",
@@ -32,10 +32,14 @@
     "synthMax",
     "synthMean",
     "synthVariance",
+    "synthNumHistCustom",
     "synthCatMode",
     "synthCatMergePct",
     "synthCatCustom",
   ];
+
+  /** Bin count for numeric histogram UI / synthNumHistCustom (matches Chart.js metadata charts). */
+  const NUMERIC_DIST_HIST_BINS = 12;
 
   let state = {
     step: 0,
@@ -158,6 +162,8 @@
     els.metadataDashboardColumns = $("metadata-dashboard-columns");
     els.metadataJson = $("metadata-json");
     els.metadataChartsRow = $("metadata-charts-row");
+    els.metadataDistLegend = $("metadata-dist-legend");
+    els.metadataDistributionEditor = $("metadata-distribution-editor");
     els.metadataCorrelation = $("metadata-correlation");
     els.metadataAiSuggestBtn = $("btn-metadata-ai-suggest");
     els.metadataAiSuggestStatus = $("metadata-ai-suggest-status");
@@ -195,6 +201,7 @@
     els.btnResetAllSynth = $("btn-reset-all-synth");
     els.btnResetColumnsSynth = $("btn-reset-columns-synth");
     els.btnResetCorrSynth = $("btn-reset-corr-synth");
+    els.btnRevertDistributions = $("btn-revert-distributions");
   }
 
   function toast(msg) {
@@ -504,9 +511,87 @@
     if (mean != null) moments.mean = Number(mean.toFixed(6));
     if (variance != null) moments.variance = Number(variance.toFixed(6));
     if (Object.keys(moments).length) t.moments = moments;
+    const histParsed = parseNumericHistogramProportionsJson(ed.synthNumHistCustom, { silent: true });
+    if (histParsed && histParsed.length) {
+      t.custom_discretized_histogram = {
+        binning: "equal_width_on_profiled_numeric_sample",
+        bin_count: histParsed.length,
+        bins: histParsed.map((row) => ({
+          bin_label: row.label,
+          proportion: row.proportion,
+        })),
+      };
+    }
     if (!Object.keys(t).length) return undefined;
     if (observedSummary) t.numeric_summary_observed_reference = observedSummary;
     return t;
+  }
+
+  function parseNumericHistogramProportionsJson(text, opts) {
+    const silent = opts && opts.silent;
+    if (!text || !String(text).trim()) return null;
+    let arr;
+    try {
+      arr = JSON.parse(String(text).trim());
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(arr) || !arr.length) return null;
+    const out = [];
+    for (let i = 0; i < arr.length; i++) {
+      const row = arr[i];
+      if (!row || typeof row !== "object") return null;
+      const label = row.label != null ? String(row.label) : "";
+      const p = parseOptionalNumber(row.proportion);
+      if (p == null || p < 0 || p > 1) return null;
+      out.push({ label: label.length > 40 ? label.slice(0, 38) + "…" : label, proportion: Number(p.toFixed(6)) });
+    }
+    const sum = out.reduce((a, x) => a + x.proportion, 0);
+    if (!silent && Math.abs(sum - 1) > 0.08) {
+      toast("Histogram bin targets should sum to about 1.0 (current sum " + sum.toFixed(3) + ").");
+    }
+    return out;
+  }
+
+  /** Short tick text for numeric histogram SVG (full-precision label stays in data for JSON matching). */
+  function formatDistNumBinAxisDisplay(labelStr) {
+    const v = Number(String(labelStr).replace(/,/g, ""));
+    if (!Number.isFinite(v)) {
+      const s = String(labelStr);
+      return s.length > 9 ? `${s.slice(0, 8)}…` : s;
+    }
+    return String(Math.round(v));
+  }
+
+  function buildObservedNumericHistogramBins(colStat) {
+    const sample = colStat.numericSample;
+    if (!sample || sample.length < 3) return null;
+    const bins = NUMERIC_DIST_HIST_BINS;
+    const min = Math.min(...sample);
+    const max = Math.max(...sample);
+    const step = (max - min) / bins || 1;
+    const counts = new Array(bins).fill(0);
+    sample.forEach((x) => {
+      let i = Math.floor((x - min) / step);
+      if (i >= bins) i = bins - 1;
+      if (i < 0) i = 0;
+      counts[i]++;
+    });
+    const labels = counts.map((_, i) => (min + i * step).toFixed(2));
+    const total = counts.reduce((a, b) => a + b, 0) || 1;
+    return labels.map((label, i) => ({
+      label,
+      proportion: counts[i] / total,
+      original: counts[i] / total,
+    }));
+  }
+
+  function numericHistogramMatchesBaseline(baseBins, proportions) {
+    if (!baseBins || !proportions || baseBins.length !== proportions.length) return false;
+    for (let i = 0; i < baseBins.length; i++) {
+      if (Math.abs((proportions[i] || 0) - baseBins[i].original) > 0.002) return false;
+    }
+    return true;
   }
 
   function parseCustomCategoryProportionsJson(text, opts) {
@@ -1049,6 +1134,7 @@
           "Per-column Edit metadata can set synthetic numeric shape/range/moments and categorical mix strategies — see synthetic_numeric_targets and synthetic_categorical_targets on each column.",
           "metadata_step_notes captures optional rationale typed into each accordion on the metadata screen.",
           "accepted_ai_metadata_guidance lists coach recommendations you explicitly accepted; per-column copies appear as accepted_ai_coach_guidance for generators that honor field-level intent.",
+          "For numeric columns, synthetic_numeric_targets.custom_discretized_histogram can carry rebalanced bin mass from the Distributions UI (same equal-width bins as the profiled sample histogram).",
         ],
       },
     };
@@ -1060,11 +1146,40 @@
   let corrModalColA = null;
   let corrModalColB = null;
 
+  /** Active pointer-drag on a numeric histogram bin (metadata distributions). */
+  let numHistDrag = null;
+
   function bindMetadataViewEvents() {
     if (metadataViewEventsBound || !els.viewMetadata) return;
     metadataViewEventsBound = true;
     els.viewMetadata.addEventListener("change", (e) => {
       const t = e.target;
+      if (t.matches && t.matches("select.dist-num-shape-select[data-num-shape-col]")) {
+        const col = t.getAttribute("data-num-shape-col");
+        if (!col || !state.headers.includes(col)) return;
+        const v = t.value;
+        if (!state.columnMetadataEdits) state.columnMetadataEdits = {};
+        const nextEd = { ...getEditForCol(col) };
+        if (!v || v === "auto") delete nextEd.synthDist;
+        else nextEd.synthDist = v;
+        pruneEmptyColumnEdit(col, nextEd);
+        saveSession();
+        renderMetadata();
+        return;
+      }
+      if (t.matches && t.matches("select.dist-cat-strategy-select[data-cat-strat-col]")) {
+        const col = t.getAttribute("data-cat-strat-col");
+        if (!col || !state.headers.includes(col)) return;
+        applyDistributionSectionCatStrategy(col, t.value || "auto");
+        return;
+      }
+      if (t.matches && t.matches("input.dist-cat-merge-input[data-cat-merge-col]")) {
+        const col = t.getAttribute("data-cat-merge-col");
+        if (!col || !state.headers.includes(col)) return;
+        if (getEditForCol(col).synthCatMode !== "merge_rare") return;
+        applyDistributionSectionCatStrategy(col, "merge_rare", t.value);
+        return;
+      }
       if (!t.classList || !t.classList.contains("meta-include-cb")) return;
       const col = t.getAttribute("data-col");
       if (!col) return;
@@ -1073,6 +1188,73 @@
       saveSession();
       renderMetadata();
     });
+    function handleDistributionSliderFromEvent(e) {
+      const t = e.target;
+      if (!t || !t.matches || !t.matches("input.dist-edit-slider[data-hist-kind][data-hist-slider-col][data-hist-slider-idx]")) return;
+      if (t.disabled) return;
+      const kind = t.getAttribute("data-hist-kind");
+      const col = t.getAttribute("data-hist-slider-col");
+      const idxRaw = t.getAttribute("data-hist-slider-idx");
+      if (!col || idxRaw == null) return;
+      const idx = Number(idxRaw);
+      const val = Number(t.value);
+      if (!Number.isFinite(idx) || !Number.isFinite(val)) return;
+      if (kind === "num") applyNumericHistogramSliderChange(col, idx, val / 100);
+      else {
+        let catBuckets = 7;
+        const art = t.closest("[data-dist-cat-buckets]");
+        if (art) {
+          const raw = art.getAttribute("data-dist-cat-buckets");
+          const n = Number(raw);
+          if (Number.isFinite(n) && n >= 3) catBuckets = n;
+        }
+        applyDistributionSliderChange(col, idx, val / 100, catBuckets);
+      }
+    }
+    els.viewMetadata.addEventListener("input", handleDistributionSliderFromEvent);
+    els.viewMetadata.addEventListener("change", handleDistributionSliderFromEvent);
+
+    els.viewMetadata.addEventListener("pointerdown", (e) => {
+      const hit = e.target.closest(".dist-num-hist-hit");
+      if (!hit) return;
+      e.preventDefault();
+      const col = hit.getAttribute("data-num-hist-col");
+      const idx = Number(hit.getAttribute("data-num-hist-idx"));
+      const pRaw = hit.getAttribute("data-num-hist-p");
+      const startP = Number(pRaw);
+      if (!col || !Number.isFinite(idx) || !Number.isFinite(startP)) return;
+      const wrap = hit.closest(".dist-num-interactive-chart");
+      if (!wrap) return;
+      const plotH = Number(wrap.getAttribute("data-plot-h")) || 168;
+      numHistDrag = { pointerId: e.pointerId, col, idx, startY: e.clientY, startP, plotH };
+      try {
+        els.viewMetadata.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+    });
+    els.viewMetadata.addEventListener("pointermove", (e) => {
+      if (!numHistDrag || e.pointerId !== numHistDrag.pointerId) return;
+      e.preventDefault();
+      const dy = e.clientY - numHistDrag.startY;
+      const plotH = numHistDrag.plotH;
+      const newTarget = Math.max(0, Math.min(1, numHistDrag.startP - dy / plotH));
+      applyNumericHistogramSliderChange(numHistDrag.col, numHistDrag.idx, newTarget);
+    });
+    els.viewMetadata.addEventListener("pointerup", (e) => {
+      if (!numHistDrag || e.pointerId !== numHistDrag.pointerId) return;
+      try {
+        els.viewMetadata.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      numHistDrag = null;
+    });
+    els.viewMetadata.addEventListener("pointercancel", (e) => {
+      if (!numHistDrag || e.pointerId !== numHistDrag.pointerId) return;
+      numHistDrag = null;
+    });
+
     els.viewMetadata.addEventListener("click", (e) => {
       const cell = e.target.closest(".corr-cell-editable");
       if (cell) {
@@ -1183,6 +1365,7 @@
     if (!ed || typeof ed !== "object") return false;
     if (ed.synthDist && ed.synthDist !== "auto") return true;
     if (["synthMin", "synthMax", "synthMean", "synthVariance"].some((k) => String(ed[k] || "").trim())) return true;
+    if (String(ed.synthNumHistCustom || "").trim()) return true;
     if (ed.synthCatMode && ed.synthCatMode !== "auto") return true;
     return false;
   }
@@ -1240,7 +1423,7 @@
     if (sectionId === "hygiene") return false;
     if (sectionId === "columns") return incExc || colEd;
     if (sectionId === "correlations") return corr;
-    if (sectionId === "distributions") return colSynth;
+    if (sectionId === "distributions") return hasDistributionSectionOverrides();
     if (sectionId === "json") return hasMetadataPackageDrift();
     return false;
   }
@@ -1267,7 +1450,7 @@
     if (sectionId === "hygiene") return false;
     if (sectionId === "columns") return names.length > 0;
     if (sectionId === "correlations") return corr;
-    if (sectionId === "distributions") return colSynth;
+    if (sectionId === "distributions") return hasDistributionSectionOverrides();
     if (sectionId === "json") return hasMetadataPackageDrift();
     return false;
   }
@@ -1366,6 +1549,15 @@
       items.push({
         field: "Custom category mix (JSON)",
         from: "(unset)",
+        to: snip.length < full.length ? `${snip}…` : snip,
+      });
+    }
+    if (String(ed.synthNumHistCustom || "").trim()) {
+      const full = String(ed.synthNumHistCustom).trim();
+      const snip = full.slice(0, 120);
+      items.push({
+        field: "Numeric histogram (custom bin targets)",
+        from: "(observed binning only)",
         to: snip.length < full.length ? `${snip}…` : snip,
       });
     }
@@ -1635,6 +1827,7 @@
     if (!String(x.synthMax || "").trim()) delete x.synthMax;
     if (!String(x.synthMean || "").trim()) delete x.synthMean;
     if (!String(x.synthVariance || "").trim()) delete x.synthVariance;
+    if (!String(x.synthNumHistCustom || "").trim()) delete x.synthNumHistCustom;
     if (!x.synthCatMode || x.synthCatMode === "auto") {
       delete x.synthCatMode;
       delete x.synthCatMergePct;
@@ -1770,6 +1963,533 @@
     renderMetadata();
   }
 
+  /** Max rows in category-mix UI (top values + optional Other); scales with cardinality, capped for performance. */
+  function getCategoryMixMaxBuckets(colStat) {
+    const HARD_MAX = 36;
+    const SOFT_MIN = 7;
+    const u = colStat && Number.isFinite(colStat.unique) ? colStat.unique : 0;
+    if (u <= 0) return SOFT_MIN;
+    return Math.min(HARD_MAX, Math.max(SOFT_MIN, u + 1));
+  }
+
+  function buildObservedCategoryDistribution(colName, maxBuckets) {
+    const freq = new Map();
+    let nonNull = 0;
+    state.rows.forEach((r) => {
+      const v = r[colName];
+      if (v === "" || v == null) return;
+      nonNull++;
+      const k = String(v);
+      freq.set(k, (freq.get(k) || 0) + 1);
+    });
+    if (!nonNull) return [];
+    const top = [...freq.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, Math.max(2, maxBuckets - 1));
+    const topTotal = top.reduce((a, x) => a + x[1], 0);
+    const items = top.map(([value, count]) => ({ label: value, proportion: count / nonNull, original: count / nonNull }));
+    const otherCount = Math.max(0, nonNull - topTotal);
+    if (otherCount > 0) {
+      items.push({ label: "Other", proportion: otherCount / nonNull, original: otherCount / nonNull });
+    }
+    const sum = items.reduce((a, x) => a + x.proportion, 0) || 1;
+    items.forEach((x) => {
+      x.proportion = x.proportion / sum;
+      x.original = x.original / sum;
+    });
+    return items;
+  }
+
+  function rebalanceDistributionShares(current, changedIdx, target) {
+    const n = current.length;
+    const next = current.slice();
+    if (n <= 1 || changedIdx < 0 || changedIdx >= n) return next;
+    const clampedTarget = Math.max(0, Math.min(1, target));
+    const old = next[changedIdx];
+    let delta = clampedTarget - old;
+    next[changedIdx] = clampedTarget;
+    if (Math.abs(delta) < 1e-9) return next;
+    const others = [];
+    for (let i = 0; i < n; i++) {
+      if (i !== changedIdx) others.push(i);
+    }
+    if (delta > 0) {
+      // Raise one bucket by taking mass from the others proportionally.
+      const pool = others.reduce((a, i) => a + next[i], 0);
+      if (pool <= 0) {
+        next[changedIdx] = old;
+        return next;
+      }
+      const take = Math.min(delta, pool);
+      others.forEach((i) => {
+        const share = next[i] / pool;
+        next[i] = Math.max(0, next[i] - take * share);
+      });
+      next[changedIdx] = old + take;
+    } else {
+      // Lower one bucket by redistributing to others proportionally.
+      const give = -delta;
+      const pool = others.reduce((a, i) => a + next[i], 0);
+      if (pool > 0) {
+        others.forEach((i) => {
+          const share = next[i] / pool;
+          next[i] = next[i] + give * share;
+        });
+      } else {
+        const per = give / others.length;
+        others.forEach((i) => {
+          next[i] = per;
+        });
+      }
+    }
+    const s = next.reduce((a, x) => a + x, 0) || 1;
+    return next.map((x) => Math.max(0, x / s));
+  }
+
+  function applyDistributionSliderChange(colName, idx, targetShare, maxBuckets) {
+    const mb =
+      maxBuckets != null && Number.isFinite(maxBuckets) ? Math.min(48, Math.max(7, Math.floor(maxBuckets))) : 7;
+    const base = buildObservedCategoryDistribution(colName, mb);
+    if (base.length < 2) return;
+    const ed = getEditForCol(colName);
+    const parsed = parseCustomCategoryProportionsJson(ed.synthCatCustom, { silent: true });
+    const byLabel = new Map();
+    (parsed || []).forEach((r) => {
+      byLabel.set(String(r.value), Number(r.proportion));
+    });
+    const current = base.map((b) => {
+      const p = byLabel.get(b.label);
+      return Number.isFinite(p) && p >= 0 ? p : b.proportion;
+    });
+    const normalizedCurrent = (() => {
+      const s = current.reduce((a, x) => a + x, 0) || 1;
+      return current.map((x) => Math.max(0, x / s));
+    })();
+    const next = rebalanceDistributionShares(normalizedCurrent, idx, targetShare);
+    const payload = base.map((b, i) => ({
+      value: b.label,
+      proportion: Number(next[i].toFixed(6)),
+    }));
+    const sumP = payload.reduce((a, x) => a + x.proportion, 0) || 1;
+    payload.forEach((x) => {
+      x.proportion = Number((x.proportion / sumP).toFixed(6));
+    });
+    if (!state.columnMetadataEdits) state.columnMetadataEdits = {};
+    const nextEd = { ...getEditForCol(colName), synthCatMode: "custom", synthCatCustom: JSON.stringify(payload) };
+    pruneEmptyColumnEdit(colName, nextEd);
+    saveSession();
+    renderMetadata();
+  }
+
+  function applyDistributionSectionCatStrategy(col, mode, mergePctOptional) {
+    if (!col || !state.headers.includes(col)) return;
+    const m = mode || "auto";
+    const prev = getEditForCol(col);
+    const nextEd = { ...prev };
+    if (m === "auto") {
+      delete nextEd.synthCatMode;
+      delete nextEd.synthCatCustom;
+      delete nextEd.synthCatMergePct;
+    } else if (m === "uniform_balance") {
+      nextEd.synthCatMode = "uniform_balance";
+      delete nextEd.synthCatCustom;
+      delete nextEd.synthCatMergePct;
+    } else if (m === "merge_rare") {
+      nextEd.synthCatMode = "merge_rare";
+      delete nextEd.synthCatCustom;
+      const pct =
+        mergePctOptional != null && String(mergePctOptional).trim()
+          ? String(mergePctOptional).trim()
+          : String(prev.synthCatMergePct || "0.02").trim() || "0.02";
+      nextEd.synthCatMergePct = pct;
+    } else if (m === "custom") {
+      nextEd.synthCatMode = "custom";
+      const colStats = inferColumnStats(state.headers, state.rows);
+      const st = colStats.find((x) => x.name === col);
+      const base = buildObservedCategoryDistribution(col, getCategoryMixMaxBuckets(st || { unique: 0 }));
+      const existing = parseCustomCategoryProportionsJson(nextEd.synthCatCustom, { silent: true });
+      if (!existing || !existing.length) {
+        const sumP = base.reduce((a, b) => a + b.proportion, 0) || 1;
+        const payload = base.map((b) => ({
+          value: b.label,
+          proportion: Number((b.proportion / sumP).toFixed(6)),
+        }));
+        nextEd.synthCatCustom = JSON.stringify(payload);
+      }
+    }
+    if (!state.columnMetadataEdits) state.columnMetadataEdits = {};
+    pruneEmptyColumnEdit(col, nextEd);
+    saveSession();
+    renderMetadata();
+  }
+
+  function buildNumericDistShapeSelectHtml(colName, currentVal) {
+    const cur = currentVal && currentVal !== "auto" ? currentVal : "auto";
+    const opts = [
+      ["auto", "Match observed (auto)"],
+      ["normal", "Normal-like"],
+      ["skew_right", "Right-skewed"],
+      ["skew_left", "Left-skewed"],
+      ["uniform", "Roughly uniform"],
+      ["multimodal", "Multimodal / mixture"],
+    ]
+      .map(
+        ([v, lab]) =>
+          `<option value="${escapeAttr(v)}"${v === cur ? " selected" : ""}>${escapeHtml(lab)}</option>`
+      )
+      .join("");
+    return `<div class="dist-num-shape-row">
+      <label class="dist-num-shape-label">Distribution shape
+        <select class="modal-input dist-num-shape-select" data-num-shape-col="${escapeAttr(colName)}">${opts}</select>
+      </label>
+    </div>`;
+  }
+
+  function buildNumericHistogramInteractiveHtml(colName, colStat) {
+    const base = buildObservedNumericHistogramBins(colStat);
+    if (!base || base.length < 2) return "";
+    const ed = getEditForCol(colName);
+    const parsed = parseNumericHistogramProportionsJson(ed.synthNumHistCustom, { silent: true });
+    const byLabel = new Map();
+    (parsed || []).forEach((r) => {
+      byLabel.set(String(r.label), Number(r.proportion));
+    });
+    const current = base.map((b) => {
+      const p = byLabel.get(b.label);
+      return Number.isFinite(p) && p >= 0 ? p : b.proportion;
+    });
+    const sumC = current.reduce((a, x) => a + x, 0) || 1;
+    const norm = current.map((x) => Math.max(0, x / sumC));
+    const maxScale = Math.max(...base.map((b) => b.original), ...norm, 1e-9) * 1.06;
+
+    const W = 400;
+    const H = 220;
+    const padL = 44;
+    const padR = 12;
+    const padTop = 12;
+    const padBot = 40;
+    const plotW = W - padL - padR;
+    const plotH = H - padTop - padBot;
+    const bottom = H - padBot;
+    const n = base.length;
+    const slotW = plotW / n;
+
+    const parts = [];
+    parts.push(
+      `<svg class="dist-num-svg" viewBox="0 0 ${W} ${H}" width="100%" height="220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Histogram for ${escapeAttr(
+        colName
+      )}">`
+    );
+    parts.push(
+      `<line class="dist-num-axis" x1="${padL}" y1="${bottom}" x2="${W - padR}" y2="${bottom}" stroke="currentColor" stroke-opacity="0.25" stroke-width="1" />`
+    );
+
+    for (let i = 0; i < n; i++) {
+      const b = base[i];
+      const x = padL + i * slotW;
+      const bw = slotW * 0.82;
+      const bx = x + (slotW - bw) / 2;
+      const origH = (b.original / maxScale) * plotH;
+      const curH = (norm[i] / maxScale) * plotH;
+      const barH = Math.max(curH, 3);
+      const origTop = bottom - origH;
+      const curTop = bottom - barH;
+      const lab = formatDistNumBinAxisDisplay(b.label);
+      parts.push(`<rect class="dist-num-hist-baseline" x="${bx.toFixed(2)}" y="${origTop.toFixed(2)}" width="${bw.toFixed(2)}" height="${origH.toFixed(2)}" rx="3" />`);
+      parts.push(
+        `<rect class="dist-num-hist-bar" x="${bx.toFixed(2)}" y="${curTop.toFixed(2)}" width="${bw.toFixed(2)}" height="${barH.toFixed(2)}" rx="3" pointer-events="none" aria-hidden="true" />`
+      );
+      parts.push(
+        `<rect class="dist-num-hist-hit" x="${x.toFixed(2)}" y="${padTop}" width="${slotW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="transparent" data-num-hist-col="${escapeAttr(
+          colName
+        )}" data-num-hist-idx="${i}" data-num-hist-p="${norm[i]}" />`
+      );
+      parts.push(
+        `<text class="dist-num-bin-label" x="${(x + slotW / 2).toFixed(2)}" y="${H - 10}" text-anchor="middle" font-size="9">${escapeHtml(lab)}</text>`
+      );
+    }
+    parts.push(`</svg>`);
+
+    const curDist = ed.synthDist && ed.synthDist !== "auto" ? ed.synthDist : "auto";
+    const shapeRow = buildNumericDistShapeSelectHtml(colName, curDist);
+
+    return `<article class="chart-card dist-edit-card dist-num-card">
+      <h4>Numeric histogram — ${escapeHtml(colName)}</h4>
+      <p class="dist-edit-help"><strong>Drag</strong> a bar up or down (grab anywhere in its column). Amber bars show the <strong>observed baseline</strong>; blue shows your <strong>synthetic</strong> target. Other bins rebalance so the total stays 100%.</p>
+      ${shapeRow}
+      <div class="dist-num-interactive-chart" data-plot-h="${plotH}" style="touch-action:none">${parts.join("")}</div>
+    </article>`;
+  }
+
+  function applyNumericHistogramSliderChange(colName, idx, targetShare) {
+    const colStats = inferColumnStats(state.headers, state.rows);
+    const colStat = colStats.find((x) => x.name === colName);
+    if (!colStat) return;
+    const base = buildObservedNumericHistogramBins(colStat);
+    if (!base || base.length < 2) return;
+    const ed = getEditForCol(colName);
+    const parsed = parseNumericHistogramProportionsJson(ed.synthNumHistCustom, { silent: true });
+    const byLabel = new Map();
+    (parsed || []).forEach((r) => {
+      byLabel.set(String(r.label), Number(r.proportion));
+    });
+    const current = base.map((b) => {
+      const p = byLabel.get(b.label);
+      return Number.isFinite(p) && p >= 0 ? p : b.proportion;
+    });
+    const normalizedCurrent = (() => {
+      const s = current.reduce((a, x) => a + x, 0) || 1;
+      return current.map((x) => Math.max(0, x / s));
+    })();
+    const next = rebalanceDistributionShares(normalizedCurrent, idx, targetShare);
+    const payload = base.map((b, i) => ({
+      label: b.label,
+      proportion: Number(next[i].toFixed(6)),
+    }));
+    const sumP = payload.reduce((a, x) => a + x.proportion, 0) || 1;
+    payload.forEach((x) => {
+      x.proportion = Number((x.proportion / sumP).toFixed(6));
+    });
+    const props = payload.map((x) => x.proportion);
+    if (!state.columnMetadataEdits) state.columnMetadataEdits = {};
+    const nextEd = { ...getEditForCol(colName) };
+    if (numericHistogramMatchesBaseline(base, props)) {
+      delete nextEd.synthNumHistCustom;
+    } else {
+      nextEd.synthNumHistCustom = JSON.stringify(payload);
+    }
+    pruneEmptyColumnEdit(colName, nextEd);
+    saveSession();
+    renderMetadata();
+  }
+
+  function distEditControlRowHtml(colName, idx, fullLabel, shortLabel, curPct, origPct, kind, opts) {
+    const disabled = opts && opts.disabled;
+    const disAttr = disabled ? " disabled" : "";
+    return `<div class="dist-edit-row${disabled ? " dist-edit-row--disabled" : ""}">
+      <div class="dist-edit-label-block">
+        <span class="dist-edit-label" title="${escapeAttr(fullLabel)}">${escapeHtml(shortLabel)}</span>
+        <span class="dist-edit-values"><span class="dist-edit-current">${curPct.toFixed(1)}%</span> <span class="dist-edit-original">baseline ${origPct.toFixed(1)}%</span></span>
+      </div>
+      <div class="dist-edit-viz" title="Blue bar = current synthetic share; amber to dashed line = observed baseline.">
+        <div class="dist-edit-viz-track" aria-hidden="true">
+          <div class="dist-edit-viz-baseline" style="width:${origPct.toFixed(2)}%"></div>
+          <div class="dist-edit-viz-fill" style="width:${curPct.toFixed(2)}%"></div>
+        </div>
+      </div>
+      <div class="dist-edit-slider-cell">
+        <input class="dist-edit-slider" type="range" min="0" max="100" step="0.1" value="${curPct.toFixed(1)}" data-hist-kind="${escapeAttr(
+      kind
+    )}" data-hist-slider-col="${escapeAttr(colName)}" data-hist-slider-idx="${idx}" aria-label="Adjust synthetic share for ${escapeAttr(
+      fullLabel
+    )} in ${escapeAttr(colName)}"${disAttr} />
+      </div>
+    </div>`;
+  }
+
+  /** Prefer domain columns like cost/price so they stay in the Distributions UI when many numerics exist. */
+  function orderColStatsForDistributions(arr) {
+    const headerIndex = (name) => {
+      const i = state.headers.indexOf(name);
+      return i < 0 ? 9999 : i;
+    };
+    const pri = (name) => {
+      const n = String(name).toLowerCase().replace(/\s+/g, "_");
+      if (n === "cost" || n.endsWith("_cost") || n.startsWith("cost_")) return 0;
+      if (n.includes("cost")) return 1;
+      if (n.includes("price") || n.includes("pricing")) return 2;
+      if (n.includes("revenue") || n.includes("sales")) return 3;
+      if (n.includes("amount") || n.includes("total") || n.includes("fee")) return 4;
+      if (n.includes("qty") || n.includes("quantity")) return 5;
+      return 50;
+    };
+    return [...arr].sort((a, b) => {
+      const d = pri(a.name) - pri(b.name);
+      if (d !== 0) return d;
+      return headerIndex(a.name) - headerIndex(b.name);
+    });
+  }
+
+  function getMetadataDistributionNumericColumns(colStats, limit) {
+    const filtered = colStats.filter(
+      (c) => effectiveColumnKind(c, getEditForCol(c.name)) === "numeric" && c.numericSample && c.numericSample.length > 2
+    );
+    return orderColStatsForDistributions(filtered).slice(0, limit);
+  }
+
+  function getMetadataDistributionTextColumns(colStats, limit) {
+    return colStats
+      .filter((c) => effectiveColumnKind(c, getEditForCol(c.name)) === "text" && c.nonNull > 0)
+      .slice(0, limit);
+  }
+
+  function hasDistributionSectionOverrides() {
+    const m = state.columnMetadataEdits;
+    if (!m || typeof m !== "object") return false;
+    return Object.keys(m).some((col) => {
+      const ed = m[col];
+      if (!ed || typeof ed !== "object") return false;
+      if (ed.synthDist && ed.synthDist !== "auto") return true;
+      if (String(ed.synthNumHistCustom || "").trim()) return true;
+      if (ed.synthCatMode && ed.synthCatMode !== "auto") return true;
+      return false;
+    });
+  }
+
+  function revertDistributionOverrides() {
+    if (!hasDistributionSectionOverrides()) {
+      toast("No distribution edits to revert.");
+      return;
+    }
+    const m = state.columnMetadataEdits;
+    if (!m || typeof m !== "object") return;
+    Object.keys(m).forEach((col) => {
+      if (!m[col]) return;
+      const ed = { ...m[col] };
+      let touched = false;
+      if (ed.synthDist && ed.synthDist !== "auto") {
+        delete ed.synthDist;
+        touched = true;
+      }
+      if (String(ed.synthNumHistCustom || "").trim()) {
+        delete ed.synthNumHistCustom;
+        touched = true;
+      }
+      if (ed.synthCatMode && ed.synthCatMode !== "auto") {
+        delete ed.synthCatMode;
+        delete ed.synthCatCustom;
+        delete ed.synthCatMergePct;
+        touched = true;
+      }
+      if (touched) pruneEmptyColumnEdit(col, ed);
+    });
+    numHistDrag = null;
+    saveSession();
+    renderMetadata();
+    if (state.step === 2 && state.metadataPane === "changesReview") renderMetadataChangesReview();
+    toast("Distributions reset to observed profiling defaults.");
+  }
+
+  function updateDistributionsRevertButtonVisibility() {
+    if (!els.btnRevertDistributions) return;
+    const show = hasDistributionSectionOverrides();
+    els.btnRevertDistributions.classList.toggle("hidden", !show);
+    const distDet = $("meta-section-distributions");
+    if (distDet) distDet.classList.toggle("meta-section-panel--dist-edited", show);
+  }
+
+  let distributionsRevertBound = false;
+  function bindRevertDistributionsOnce() {
+    if (distributionsRevertBound || !els.btnRevertDistributions) return;
+    distributionsRevertBound = true;
+    els.btnRevertDistributions.addEventListener("click", () => revertDistributionOverrides());
+  }
+
+  function renderMetadataDistributionEditor(colStats, precomputedNumericCols) {
+    if (!els.metadataDistributionEditor) return;
+    const blocks = [];
+    const numCols = precomputedNumericCols || getMetadataDistributionNumericColumns(colStats, 3);
+    numCols.forEach((c) => {
+      const html = buildNumericHistogramInteractiveHtml(c.name, c);
+      if (html) blocks.push(html);
+    });
+
+    const catCols = getMetadataDistributionTextColumns(colStats, 2);
+    catCols.forEach((c) => {
+      const catBuckets = getCategoryMixMaxBuckets(c);
+      const base = buildObservedCategoryDistribution(c.name, catBuckets);
+      if (base.length < 2) return;
+      const ed = getEditForCol(c.name);
+      const catModeRaw = ed.synthCatMode && ed.synthCatMode !== "auto" ? ed.synthCatMode : "auto";
+      const slidersDisabled = catModeRaw === "merge_rare" || catModeRaw === "uniform_balance";
+      const stratOpts = [
+        ["auto", "Match observed proportions"],
+        ["uniform_balance", "Roughly balance categories"],
+        ["merge_rare", "Merge rare below a threshold"],
+        ["custom", "Custom proportions (sliders)"],
+      ]
+        .map(
+          ([v, lab]) =>
+            `<option value="${escapeAttr(v)}"${v === catModeRaw ? " selected" : ""}>${escapeHtml(lab)}</option>`
+        )
+        .join("");
+      const mergeHidden = catModeRaw !== "merge_rare" ? " hidden" : "";
+      const mergeValRaw =
+        ed.synthCatMergePct != null && String(ed.synthCatMergePct).trim()
+          ? String(ed.synthCatMergePct).trim()
+          : "0.02";
+      const strategyBlock = `<div class="dist-cat-strategy-row">
+        <label class="dist-cat-strategy-label">Category strategy
+          <select class="modal-input dist-cat-strategy-select" data-cat-strat-col="${escapeAttr(c.name)}">${stratOpts}</select>
+        </label>
+        <div class="dist-cat-merge-row${mergeHidden}">
+          <label class="dist-cat-merge-label">Merge rare below (proportion 0–1)
+            <input type="text" class="modal-input dist-cat-merge-input" inputmode="decimal" autocomplete="off" data-cat-merge-col="${escapeAttr(
+              c.name
+            )}" value="${escapeAttr(mergeValRaw)}" placeholder="0.02" />
+          </label>
+        </div>
+      </div>`;
+      const parsed = parseCustomCategoryProportionsJson(ed.synthCatCustom, { silent: true });
+      const byLabel = new Map();
+      (parsed || []).forEach((r) => byLabel.set(String(r.value), Number(r.proportion)));
+      const current = base.map((b) => {
+        const p = byLabel.get(b.label);
+        return Number.isFinite(p) && p >= 0 ? p : b.proportion;
+      });
+      const sumCurrent = current.reduce((a, x) => a + x, 0) || 1;
+      const normalizedCurrent = current.map((x) => Math.max(0, x / sumCurrent));
+      const sliderRows = base
+        .map((b, i) => {
+          const cur = normalizedCurrent[i];
+          const curPct = Math.max(0, Math.min(100, cur * 100));
+          const origPct = Math.max(0, Math.min(100, b.original * 100));
+          const short = b.label.length > 32 ? `${b.label.slice(0, 30)}…` : b.label;
+          return distEditControlRowHtml(c.name, i, b.label, short, curPct, origPct, "cat", { disabled: slidersDisabled });
+        })
+        .join("");
+      const hasOtherBucket = base.length > 0 && base[base.length - 1].label === "Other";
+      const namedSlots = hasOtherBucket ? base.length - 1 : base.length;
+      const foldNote =
+        !slidersDisabled && c.unique > namedSlots
+          ? ` Less frequent levels roll into <strong>Other</strong> (file has ${c.unique.toLocaleString()} distinct values).`
+          : "";
+      const scrollNote = base.length > 10 ? " Long lists scroll inside the shaded area." : "";
+      const helpText = slidersDisabled
+        ? `<p class="dist-edit-help">Strategy is <strong>${
+            catModeRaw === "merge_rare" ? "merge rare" : "balanced mix"
+          }</strong> (not edited with sliders). Choose <strong>Custom proportions (sliders)</strong> to drag category shares. Rows below still show observed vs. current stored targets when applicable.${scrollNote}</p>`
+        : `<p class="dist-edit-help">Each row shows the <strong>observed baseline</strong> (amber band to the dashed line) and your <strong>current synthetic target</strong> (blue). Drag the slider beside it; other categories rebalance so the total stays 100%.${foldNote}${scrollNote}</p>`;
+      const manyClass = base.length > 10 ? " dist-edit-list--many" : "";
+      blocks.push(`<article class="chart-card dist-edit-card" data-dist-cat-buckets="${catBuckets}">
+        <h4>Category mix — ${escapeHtml(c.name)}</h4>
+        <p class="dist-edit-meta">${c.unique.toLocaleString()} distinct · ${base.length} row${
+        base.length === 1 ? "" : "s"
+      } in editor</p>
+        ${strategyBlock}
+        ${helpText}
+        <div class="dist-edit-list${manyClass}">${sliderRows}</div>
+      </article>`);
+    });
+
+    const legendInner = `<span class="dist-legend-item"><span class="dist-legend-swatch dist-legend-swatch--baseline" aria-hidden="true"></span> Observed baseline</span>
+      <span class="dist-legend-item"><span class="dist-legend-swatch dist-legend-swatch--synth" aria-hidden="true"></span> Synthetic target</span>`;
+    if (els.metadataDistLegend) {
+      if (blocks.length) {
+        els.metadataDistLegend.innerHTML = legendInner;
+        els.metadataDistLegend.classList.remove("hidden");
+        els.metadataDistLegend.setAttribute("role", "group");
+        els.metadataDistLegend.setAttribute("aria-label", "Distribution legend");
+      } else {
+        els.metadataDistLegend.innerHTML = "";
+        els.metadataDistLegend.classList.add("hidden");
+        els.metadataDistLegend.removeAttribute("role");
+        els.metadataDistLegend.removeAttribute("aria-label");
+      }
+    }
+    els.metadataDistributionEditor.innerHTML = blocks.join("");
+  }
+
   function bindMetadataModalOnce() {
     if (!els.metadataEditSave || els.metadataEditSave.dataset.bound) return;
     if (!els.metadataEditCancel || !els.metadataEditBackdrop || !els.metadataEditModal) return;
@@ -1811,6 +2531,13 @@
     bindMetadataSectionDetailsToggleOnce();
     if (!state.rows.length || !els.metadataHygieneList || !els.metadataDashboardStats || !els.metadataDashboardColumns || !els.metadataJson) {
       repositionSyntheticResetButtons();
+      if (els.btnRevertDistributions) els.btnRevertDistributions.classList.add("hidden");
+      const distDet = $("meta-section-distributions");
+      if (distDet) distDet.classList.remove("meta-section-panel--dist-edited");
+      if (els.metadataDistLegend) {
+        els.metadataDistLegend.innerHTML = "";
+        els.metadataDistLegend.classList.add("hidden");
+      }
       return;
     }
 
@@ -1895,11 +2622,20 @@
       .join("");
 
     els.metadataJson.textContent = JSON.stringify(pkg, null, 2);
-    renderChartsInto(colStats, els.metadataChartsRow, state.metaCharts, "mchart");
+    const distNumericInteractive = getMetadataDistributionNumericColumns(colStats, 3);
+    renderChartsInto(colStats, els.metadataChartsRow, state.metaCharts, "mchart", {
+      skipCategorical: true,
+      skipNumeric: false,
+      metadataNumericOverflowCharts: true,
+      metadataInteractiveNumericCols: distNumericInteractive,
+    });
+    renderMetadataDistributionEditor(colStats, distNumericInteractive);
     repositionSyntheticResetButtons();
     bindMetadataSectionNotesOnce();
     bindMetadataAiSuggestOnce();
     bindMetadataAiAcceptOnce();
+    bindRevertDistributionsOnce();
+    updateDistributionsRevertButtonVisibility();
     syncMetadataSectionNotesInputs();
     updateMetadataSectionNotesVisibility();
     refreshMetadataAiSuggestionsFromState();
@@ -1967,7 +2703,7 @@
       } else if (sid === "summary") {
         body = `<p class="panel-lead meta-changes-lead-tight">Summary figures on the metadata screen reflect your current include/exclude choices and column metadata edits.</p>`;
       } else if (sid === "distributions") {
-        body = `<p class="panel-lead meta-changes-lead-tight">Charts use the same aggregates as synthesis. You set at least one column’s <strong>synthetic distribution or category strategy</strong> in Edit metadata — see <strong>Columns</strong> for exact before/after values.</p>`;
+        body = `<p class="panel-lead meta-changes-lead-tight">You changed <strong>histogram bins</strong>, <strong>numeric distribution shape</strong>, and/or <strong>category strategy or mix</strong> in the Distributions accordion. Use <strong>Revert changes</strong> (top right of that section) to clear those targets back to profiling defaults. Per-column detail also appears under <strong>Columns</strong>.</p>`;
       } else if (sid === "json") {
         body = `<p class="panel-lead meta-changes-lead-tight">The live JSON export on the metadata screen reflects all overrides listed in the sections above.</p>`;
       }
@@ -2538,17 +3274,43 @@
     list.length = 0;
   }
 
-  function renderChartsInto(colStats, containerEl, chartList, idPrefix) {
+  function renderChartsInto(colStats, containerEl, chartList, idPrefix, opts) {
     if (!containerEl) return;
+    const options = opts && typeof opts === "object" ? opts : {};
+    const skipCategorical = options.skipCategorical === true;
+    const skipNumeric = options.skipNumeric === true;
+    const metaOverflow = options.metadataNumericOverflowCharts === true;
+    const interactiveNums = options.metadataInteractiveNumericCols;
+    const excludeNames =
+      metaOverflow && Array.isArray(interactiveNums) ? new Set(interactiveNums.map((c) => c.name)) : null;
+    const useEffectiveNumeric = metaOverflow === true;
+    const numericChartLimit =
+      typeof options.numericChartLimit === "number" && Number.isFinite(options.numericChartLimit)
+        ? options.numericChartLimit
+        : metaOverflow
+          ? 2
+          : 3;
     destroyChartList(chartList);
     containerEl.innerHTML = "";
     const Chart = window.Chart;
     if (!Chart) return;
 
-    const numericCols = colStats.filter((c) => c.inferred === "numeric" && c.numericSample.length > 2).slice(0, 3);
-    const catCols = colStats
-      .filter((c) => c.inferred === "text" && c.nonNull > 0)
-      .slice(0, 2);
+    let numericCols = [];
+    if (!skipNumeric) {
+      const filtered = colStats.filter((c) => {
+        if (!c.numericSample || c.numericSample.length <= 2) return false;
+        const isNum = useEffectiveNumeric
+          ? effectiveColumnKind(c, getEditForCol(c.name)) === "numeric"
+          : c.inferred === "numeric";
+        if (!isNum) return false;
+        if (excludeNames && excludeNames.has(c.name)) return false;
+        return true;
+      });
+      numericCols = orderColStatsForDistributions(filtered).slice(0, numericChartLimit);
+    }
+    const catCols = skipCategorical
+      ? []
+      : colStats.filter((c) => c.inferred === "text" && c.nonNull > 0).slice(0, 2);
 
     numericCols.forEach((c) => {
       const id = `${idPrefix}-num-${safeId(c.name)}`;
@@ -2568,7 +3330,7 @@
         if (i < 0) i = 0;
         counts[i]++;
       });
-      const labels = counts.map((_, i) => (min + i * step).toFixed(2));
+      const labels = counts.map((_, i) => formatDistNumBinAxisDisplay(min + i * step));
       const ctx = document.getElementById(id);
       chartList.push(
         new Chart(ctx, {
@@ -2643,8 +3405,19 @@
     });
 
     if (!numericCols.length && !catCols.length) {
-      containerEl.innerHTML =
-        '<p class="panel-lead" style="margin:0">Not enough typed columns to chart automatically. Upload a sample with numeric or categorical fields.</p>';
+      if (skipNumeric && skipCategorical) {
+        containerEl.innerHTML =
+          '<p class="panel-lead" style="margin:0">Interactive numeric and categorical distributions are edited in the section below.</p>';
+      } else if (metaOverflow) {
+        containerEl.innerHTML =
+          '<p class="panel-lead" style="margin:0">Observed histograms for numeric columns that are not shown in the interactive editors below appear here when your dataset has additional suitable numeric fields.</p>';
+      } else if (skipCategorical) {
+        containerEl.innerHTML =
+          '<p class="panel-lead" style="margin:0">No numeric columns to chart here. Use the category mix controls below for text fields.</p>';
+      } else {
+        containerEl.innerHTML =
+          '<p class="panel-lead" style="margin:0">Not enough typed columns to chart automatically. Upload a sample with numeric or categorical fields.</p>';
+      }
     }
   }
 

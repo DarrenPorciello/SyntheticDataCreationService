@@ -339,10 +339,22 @@
         <details class="meta-section-panel" id="meta-section-distributions">
           <summary class="meta-section-summary">
             <span class="meta-section-summary-main"><span class="meta-section-title">Distributions</span></span>
+            <span class="meta-section-summary-end no-print" id="meta-distributions-revert-slot" aria-live="polite">
+              <button type="button" class="btn btn-ghost btn-sm hidden" id="btn-revert-distributions">Revert changes</button>
+            </span>
           </summary>
           <div class="meta-section-body">
-            <p class="panel-lead">Charts reflect the same aggregates that drive histogram- and frequency-based synthetic sampling.</p>
+            <p class="panel-lead">
+              Adjust how synthetic data should follow <strong>marginal shapes</strong>: pick a <strong>numeric distribution
+              shape</strong>, drag histogram bins, and set <strong>category strategy</strong> (balance, merge rare, or
+              custom sliders). Amber shows the observed baseline from your file; blue is your synthetic target. When this
+              section differs from defaults, <strong>Revert changes</strong> appears at the top right of the accordion.
+            </p>
             <div class="charts-row" id="metadata-charts-row"></div>
+            <div class="metadata-dist-wrap">
+              <div id="metadata-dist-legend" class="dist-legend dist-legend--above hidden" aria-live="polite"></div>
+              <div id="metadata-distribution-editor" class="dist-edit-grid" aria-live="polite"></div>
+            </div>
             <div class="meta-section-note-wrap hidden" data-meta-note-wrap="distributions">
               <div class="meta-section-note">
                 <label class="meta-section-note-label" for="meta-note-distributions">Notes on rationale for changes (optional)</label>
