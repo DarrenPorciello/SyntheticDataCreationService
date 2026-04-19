@@ -2335,14 +2335,328 @@ body.printing-changes-report .no-print {
   margin-top: 0.5rem;
 }
 
+.synthetic-gen-actions--secondary {
+  margin-top: 0.65rem;
+}
+
+.synthetic-gen-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-top: 0.5rem;
+}
+
+.synthetic-gen-btn-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.synthetic-gen-ai-icon {
+  flex-shrink: 0;
+  opacity: 0.95;
+}
+
+.synthetic-gen-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.synthetic-gen-busy[hidden] {
+  display: none !important;
+}
+
+.synthetic-gen-spinner {
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent, #6366f1);
+  border-radius: 50%;
+  animation: synthetic-gen-spin 0.7s linear infinite;
+}
+
+.synthetic-gen-busy-text {
+  min-width: 10rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
 .synthetic-gen-status {
   margin: 0.75rem 0 0;
   font-size: 0.8125rem;
   color: var(--text-muted);
 }
 
+@keyframes synthetic-gen-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.review-page-lead {
+  margin-bottom: 1rem;
+}
+
+.review-section {
+  margin-bottom: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.review-section:last-of-type {
+  margin-bottom: 0;
+}
+
+.review-section-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  list-style: none;
+  cursor: pointer;
+  padding: 0.72rem 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  user-select: none;
+  border-bottom: 1px solid transparent;
+}
+
+.review-section-summary:focus {
+  outline: none;
+}
+
+.review-section-summary:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.55);
+  outline-offset: 2px;
+}
+
+.review-section[open] > .review-section-summary {
+  border-bottom-color: var(--border);
+  background: var(--surface-elevated, rgba(0, 0, 0, 0.025));
+}
+
+details.review-section > .review-section-summary::-webkit-details-marker {
+  display: none;
+}
+
+details.review-section > .review-section-summary::marker {
+  display: none;
+  content: "";
+}
+
+.review-section-chevron {
+  flex-shrink: 0;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-top: 0.12rem;
+  border-radius: var(--radius-sm);
+  background: rgba(99, 102, 241, 0.11);
+  position: relative;
+}
+
+.review-section-chevron::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 48%;
+  width: 0.38rem;
+  height: 0.38rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translate(-50%, -50%) rotate(-45deg);
+  opacity: 0.55;
+  transition: transform 0.16s ease, opacity 0.16s ease;
+}
+
+.review-section[open] > .review-section-summary .review-section-chevron::after {
+  transform: translate(-50%, -40%) rotate(45deg);
+  opacity: 0.75;
+}
+
+.review-section-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.review-section-title {
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.review-section-meta {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  line-height: 1.38;
+}
+
+.review-section-body {
+  padding: 0.65rem 0.9rem 0.95rem;
+}
+
+.review-section-body > .panel-lead:first-child {
+  margin-top: 0;
+}
+
+.review-section-lead {
+  margin-bottom: 0.65rem;
+}
+
 .review-dashboard-root {
-  margin-top: 1rem;
+  margin-top: 0.35rem;
+}
+
+.review-fidelity-root {
+  margin: 0;
+}
+
+.review-section-body .review-distributions-root {
+  margin-top: 0.35rem;
+}
+
+.review-dash-sample-title {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.review-fidelity-card {
+  padding: 1rem 1.1rem 1.1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: linear-gradient(165deg, rgba(99, 102, 241, 0.06), transparent 42%), var(--surface);
+}
+
+.review-fidelity-heading {
+  margin: 0 0 0.65rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.review-fidelity-score-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 0.65rem;
+}
+
+.review-fidelity-score {
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--text);
+}
+
+.review-fidelity-score-max {
+  font-size: 1rem;
+  font-weight: 600;
+  opacity: 0.45;
+  margin-left: 0.1rem;
+}
+
+.review-fidelity-tier {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.review-fidelity-tier-label {
+  font-size: 1rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.review-fidelity-tier-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.review-fidelity-lead {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.review-fidelity-sub {
+  margin: 0 0 0.35rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.review-fidelity-why {
+  margin: 0;
+  padding-left: 1.15rem;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.review-fidelity-why li {
+  margin-bottom: 0.35rem;
+}
+
+.review-numeric-intro,
+.review-corr-intro,
+.review-ai-intro {
+  margin-top: 0.35rem;
+}
+
+.review-num-detail-wrap {
+  margin-top: 0.5rem;
+}
+
+.review-num-detail-table .review-num-detail-colhead th {
+  text-align: left;
+  background: var(--surface-elevated, rgba(0, 0, 0, 0.03));
+  font-weight: 600;
+  padding-top: 0.65rem;
+  padding-bottom: 0.45rem;
+}
+
+.review-num-detail-group + .review-num-detail-group .review-num-detail-colhead th {
+  padding-top: 1rem;
+}
+
+.review-corr-compare-table th[scope="row"] {
+  text-align: left;
+  font-weight: 600;
+  max-width: 18rem;
+}
+
+.review-ai-actions {
+  margin: 0.5rem 0 0.25rem;
+}
+
+.review-ai-check-body {
+  margin-top: 0.65rem;
+}
+
+.review-ai-summary {
+  margin-bottom: 0.75rem;
+}
+
+.review-ai-points {
+  margin-top: 0.25rem;
+}
+
+.review-ai-error code {
+  font-size: 0.85em;
 }
 
 .review-dash-stats {

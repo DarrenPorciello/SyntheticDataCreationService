@@ -9,6 +9,7 @@
     { id: "synthetic", name: "Synthetic data", desc: "Generate" },
     { id: "review", name: "Review", desc: "Validate" },
     { id: "analyze", name: "Analyze", desc: "Explore results" },
+    { id: "finalize", name: "Finalize", desc: "Complete workflow" },
   ];
 
   const METADATA_NOTE_SECTIONS = ["dashboard", "ai", "summary", "hygiene", "columns", "correlations", "distributions", "json"];
@@ -44,6 +45,18 @@
 
   /** Bin count for numeric histogram UI / synthNumHistCustom (matches Chart.js metadata charts). */
   const NUMERIC_DIST_HIST_BINS = 12;
+
+  /** Minimum time the synthetic “AI-style” progress UI runs (ms). */
+  const SYNTH_GENERATE_MIN_UI_MS = 7000;
+  /** Per-phase dwell (ms); must sum to SYNTH_GENERATE_MIN_UI_MS — uneven pacing; first entry includes extra “Thinking” time. */
+  const SYNTH_GENERATE_PHASE_HOLD_MS = [1380, 1420, 2680, 920, 600];
+  const SYNTH_GENERATE_STATUS_PHASES = [
+    "Thinking…",
+    "Analyzing metadata…",
+    "Generating rows…",
+    "Processing distributions…",
+    "Finalizing…",
+  ];
 
   let state = {
     step: 0,
@@ -147,14 +160,22 @@
     els.syntheticGoal = $("synthetic-goal");
     els.syntheticRowCount = $("synthetic-row-count");
     els.btnGenerateSynthetic = $("btn-generate-synthetic");
+    els.syntheticGenBusy = $("synthetic-gen-busy");
+    els.syntheticGenBusyText = $("synthetic-gen-busy-text");
     els.btnDownloadSynthetic = $("btn-download-synthetic");
     els.btnDownloadOriginalCsv = $("btn-download-original-csv");
     els.syntheticGenStatus = $("synthetic-gen-status");
     els.viewReview = $("view-review");
+    els.reviewFidelityRoot = $("review-fidelity-root");
     els.reviewDashboardRoot = $("review-dashboard-root");
     els.reviewDistributionsRoot = $("review-distributions-root");
+    els.reviewNumericDetailRoot = $("review-numeric-detail-root");
+    els.reviewCorrelationRoot = $("review-correlation-root");
     els.reviewCompareRoot = $("review-compare-root");
+    els.reviewAiCheckBody = $("review-ai-check-body");
+    els.btnReviewAiCheck = $("btn-review-ai-check");
     els.viewAnalyze = $("view-analyze");
+    els.viewFinalize = $("view-finalize");
     els.btnBackUpload = $("btn-back-upload");
     els.agentBanner = $("agent-banner");
     els.agentSummary = $("agent-summary");
@@ -182,6 +203,8 @@
     els.btnPrintMetadataChanges = $("btn-print-metadata-changes");
     els.btnProceedAnalyze = $("btn-proceed-analyze");
     els.btnBackAnalyze = $("btn-back-analyze");
+    els.btnProceedFinalize = $("btn-proceed-finalize");
+    els.btnBackFinalize = $("btn-back-finalize");
     els.metadataHygieneList = $("metadata-hygiene-list");
     els.metadataDashboardStats = $("metadata-dashboard-stats");
     els.metadataDashboardColumns = $("metadata-dashboard-columns");
@@ -235,6 +258,10 @@
     t.textContent = msg;
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 3200);
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   function parseCSV(text) {
@@ -492,6 +519,17 @@
     return Number.isFinite(x) ? x : null;
   }
 
+  function quantileLinearSorted(sorted, p) {
+    const n = sorted.length;
+    if (n === 0) return null;
+    if (n === 1) return sorted[0];
+    const idx = (n - 1) * p;
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    if (lo === hi) return sorted[lo];
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+  }
+
   function computeNumericSummaryFromSamples(arr) {
     if (!arr || !arr.length) return null;
     const sum = arr.reduce((a, b) => a + b, 0);
@@ -505,6 +543,7 @@
     });
     const variance = arr.length > 1 ? sq / (arr.length - 1) : 0;
     const std = Math.sqrt(Math.max(0, variance));
+    const qfmt = (x) => (x == null || !Number.isFinite(x) ? null : Number(Number(x).toFixed(6)));
     return {
       min: sorted[0],
       max: sorted[sorted.length - 1],
@@ -512,6 +551,10 @@
       median: Number(median.toFixed(6)),
       std: Number(std.toFixed(6)),
       variance: Number(variance.toFixed(6)),
+      p5: qfmt(quantileLinearSorted(sorted, 0.05)),
+      p25: qfmt(quantileLinearSorted(sorted, 0.25)),
+      p75: qfmt(quantileLinearSorted(sorted, 0.75)),
+      p95: qfmt(quantileLinearSorted(sorted, 0.95)),
     };
   }
 
@@ -1143,6 +1186,66 @@
     return pairs.slice(0, limit);
   }
 
+  /**
+   * Pearson correlation matrix for a fixed list of numeric column names (same row index pairing, pairwise complete).
+   * Used for review: compare original vs synthetic on the same column set.
+   */
+  function buildPearsonMatrixForColumns(matrix_columns, rows) {
+    const rowLimit = Math.min(rows.length, NUMERIC_CORR_MAX_ROWS);
+    const k = matrix_columns.length;
+    if (k < 2) {
+      return { matrix_columns, matrix: [], pairNsMap: new Map(), rows_scanned: rowLimit };
+    }
+    const series = matrix_columns.map((h) => {
+      const arr = new Array(rowLimit);
+      for (let i = 0; i < rowLimit; i++) {
+        arr[i] = parseNumericForCorrelation(rows[i][h]);
+      }
+      return arr;
+    });
+    const matrix = Array.from({ length: k }, () => Array(k).fill(null));
+    const pairNsMap = new Map();
+    for (let i = 0; i < k; i++) {
+      matrix[i][i] = 1;
+      const ai = series[i];
+      for (let j = i + 1; j < k; j++) {
+        const aj = series[j];
+        const xs = [];
+        const ys = [];
+        for (let r = 0; r < rowLimit; r++) {
+          const x = ai[r];
+          const y = aj[r];
+          if (x != null && y != null) {
+            xs.push(x);
+            ys.push(y);
+          }
+        }
+        const { r, n } = pearsonPairwiseComplete(xs, ys);
+        const rounded = r == null ? null : Number(r.toFixed(4));
+        matrix[i][j] = rounded;
+        matrix[j][i] = rounded;
+        if (rounded != null) {
+          pairNsMap.set(pairCorrelationKey(matrix_columns[i], matrix_columns[j]), n);
+        }
+      }
+    }
+    return { matrix_columns, matrix, pairNsMap, rows_scanned: rowLimit };
+  }
+
+  function getReviewNumericColumnNames(headers, rows) {
+    const colStats = inferColumnStats(headers, rows);
+    const inc = getColumnIncludeMap();
+    const names = [];
+    for (const h of headers) {
+      if (inc[h] === false) continue;
+      const st = colStats.find((x) => x.name === h);
+      if (!st || effectiveColumnKind(st, getEditForCol(h)) !== "numeric") continue;
+      names.push(h);
+      if (names.length >= NUMERIC_CORR_MAX_COLS) break;
+    }
+    return names;
+  }
+
   function buildNumericCorrelationBlock(headers, rows, colStats) {
     const numericNames = headers.filter((h) => {
       const c = colStats.find((s) => s.name === h);
@@ -1682,7 +1785,7 @@
     if (els.syntheticRowCount) els.syntheticRowCount.value = String(state.syntheticRowCount || 5000);
     if (els.syntheticOriginalLead) {
       const bytes = (state.originalCsvText || "").length;
-      els.syntheticOriginalLead.innerHTML = `The <strong>original uploaded CSV</strong> is stored in this session (~${bytes.toLocaleString()} characters) for comparison. Generation follows your <strong>metadata package</strong>: by default it matches the working table’s <strong>full-column marginals</strong> (numeric histograms, category mix, missingness). Overrides from the metadata editor, Distributions sliders, or accepted AI coach tips apply where you set them. <strong>Joint</strong> correlation structure between numerics is not fully simulated yet.`;
+      els.syntheticOriginalLead.innerHTML = `The <strong>original uploaded CSV</strong> is stored in this session (~${bytes.toLocaleString()} characters) for comparison. Generation uses your <strong>metadata package</strong> (full-column marginals by default, plus any overrides you set). Correlation structure between numerics is not fully simulated yet.`;
     }
     if (els.btnDownloadSynthetic) els.btnDownloadSynthetic.classList.toggle("hidden", !state.syntheticRows.length);
     if (els.syntheticGenStatus) {
@@ -1694,6 +1797,284 @@
         els.syntheticGenStatus.textContent = "";
       }
     }
+  }
+
+  function formatReviewStat(x, digits = 4) {
+    if (x == null || !Number.isFinite(Number(x))) return "—";
+    const v = Number(x);
+    if (Math.abs(v) >= 1e5 || (Math.abs(v) > 0 && Math.abs(v) < 1e-3)) return v.toExponential(digits - 1);
+    return v.toFixed(digits);
+  }
+
+  /**
+   * Heuristic fidelity score from marginals, categories, and linear correlation drift.
+   * Intended for a quick human read — not a formal privacy or utility guarantee.
+   */
+  function computeSyntheticFidelityReport() {
+    const inc = getColumnIncludeMap();
+    const cols = state.headers.filter((h) => inc[h] !== false);
+    const colStatsOrig = inferColumnStats(state.headers, state.rows);
+    const numMetrics = [];
+    const catCols = [];
+    for (const h of cols) {
+      const st = colStatsOrig.find((x) => x.name === h);
+      const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
+      if (kind === "numeric") {
+        const o = summarizeNumericColumn(state.rows, h);
+        const s = summarizeNumericColumn(state.syntheticRows, h);
+        if (!o || !s) continue;
+        const denomMean = Math.abs(o.mean) + o.std + 1e-6;
+        const denomStd = o.std + 1e-6;
+        numMetrics.push({
+          col: h,
+          relMean: Math.abs(o.mean - s.mean) / denomMean,
+          relStd: Math.abs(o.std - s.std) / denomStd,
+          o,
+          s,
+        });
+      } else {
+        const o = summarizeTextColumn(state.rows, h);
+        const sy = summarizeTextColumn(state.syntheticRows, h);
+        if (!o.nonNull || !sy.nonNull) continue;
+        const dTop = Math.abs(o.topPct - sy.topPct);
+        const ratioDist = Math.max(o.distinct, 1) / Math.max(sy.distinct, 1);
+        const ratioDistRev = sy.distinct / Math.max(o.distinct, 1);
+        const distSkew = Math.max(ratioDist, ratioDistRev) - 1;
+        catCols.push({ h, dTop, distSkew, o, sy });
+      }
+    }
+
+    let numSub = 78;
+    if (numMetrics.length) {
+      const avgRel = numMetrics.reduce((a, b) => a + (b.relMean + b.relStd) / 2, 0) / numMetrics.length;
+      numSub = Math.max(0, Math.min(100, 100 - avgRel * 88));
+    }
+
+    let catSub = 80;
+    if (catCols.length) {
+      const dMean = catCols.reduce((a, b) => a + b.dTop, 0) / catCols.length;
+      const skewMean = catCols.reduce((a, b) => a + Math.min(b.distSkew, 4), 0) / catCols.length;
+      catSub = Math.max(0, Math.min(100, 100 - dMean * 1.15 - skewMean * 7));
+    }
+
+    const corrPairs = [];
+    let meanAbsDr = 0;
+    let pairCount = 0;
+    const numNames = getReviewNumericColumnNames(state.headers, state.rows);
+    if (numNames.length >= 2 && state.syntheticRows.length) {
+      const Om = buildPearsonMatrixForColumns(numNames, state.rows);
+      const Sm = buildPearsonMatrixForColumns(numNames, state.syntheticRows);
+      const k = Om.matrix_columns.length;
+      for (let i = 0; i < k; i++) {
+        for (let j = i + 1; j < k; j++) {
+          const ro = Om.matrix[i][j];
+          const rs = Sm.matrix[i][j];
+          if (ro == null || rs == null) continue;
+          const delta = rs - ro;
+          meanAbsDr += Math.abs(delta);
+          pairCount++;
+          const nPair = Om.pairNsMap.get(pairCorrelationKey(Om.matrix_columns[i], Om.matrix_columns[j])) || 0;
+          corrPairs.push({
+            a: Om.matrix_columns[i],
+            b: Om.matrix_columns[j],
+            rOrig: ro,
+            rSynth: rs,
+            delta,
+            nPair,
+          });
+        }
+      }
+    }
+    let corrSub = 78;
+    if (pairCount) {
+      meanAbsDr /= pairCount;
+      corrSub = Math.max(0, Math.min(100, 100 - meanAbsDr * 115));
+    }
+
+    let wNum = numMetrics.length ? 0.44 : 0;
+    let wCat = catCols.length ? 0.3 : 0;
+    let wCorr = pairCount ? 0.26 : 0;
+    const wsum = wNum + wCat + wCorr;
+    if (!wsum) {
+      return {
+        score: null,
+        tier: "—",
+        bullets: ["No included columns were comparable after generation."],
+        numMetrics,
+        catCols,
+        corrPairs,
+        meanAbsDr: pairCount ? meanAbsDr : null,
+        pairCount,
+        numSub,
+        catSub,
+        corrSub,
+      };
+    }
+    wNum /= wsum;
+    wCat /= wsum;
+    wCorr /= wsum;
+    const score = Math.round(numSub * wNum + catSub * wCat + corrSub * wCorr);
+    let tier = "Low";
+    if (score >= 85) tier = "Good";
+    else if (score >= 70) tier = "Moderate";
+    else if (score >= 52) tier = "Fair";
+    else tier = "Low";
+
+    const bullets = [];
+    if (numMetrics.length) {
+      const avgRel = numMetrics.reduce((a, b) => a + (b.relMean + b.relStd) / 2, 0) / numMetrics.length;
+      bullets.push(
+        `<strong>${numMetrics.length} numeric</strong> field(s): typical relative drift of means and standard deviations (vs. original scale) is about <strong>${(avgRel * 100).toFixed(1)}%</strong> in this heuristic.`
+      );
+    }
+    if (pairCount) {
+      bullets.push(
+        `<strong>${pairCount} numeric pair(s)</strong>: mean absolute difference between Pearson <em>r</em> on the original working table and on the synthetic set is <strong>${meanAbsDr.toFixed(3)}</strong> (same columns, pairwise-complete rows per side).`
+      );
+    } else if (numNames.length >= 2) {
+      bullets.push("Not enough overlapping numeric pairs to score correlation fidelity automatically.");
+    }
+    if (catCols.length) {
+      const dMean = catCols.reduce((a, b) => a + b.dTop, 0) / catCols.length;
+      bullets.push(
+        `<strong>${catCols.length} categorical / text</strong> field(s): average absolute gap in <em>top category share</em> is about <strong>${dMean.toFixed(1)}</strong> percentage points.`
+      );
+    }
+    const rn = state.rows.length;
+    const sn = state.syntheticRows.length;
+    if (rn && sn && rn !== sn) {
+      bullets.push(
+        `Row counts differ (<strong>${rn.toLocaleString()}</strong> original working rows vs. <strong>${sn.toLocaleString()}</strong> synthetic). Distribution charts normalize within each set; marginals still matter for interpretation.`
+      );
+    }
+    bullets.push(
+      "This score weights numeric marginals, category top-share alignment, and correlation drift — it does <strong>not</strong> measure privacy risk or domain utility."
+    );
+
+    return { score, tier, bullets, numMetrics, catCols, corrPairs, meanAbsDr: pairCount ? meanAbsDr : null, pairCount, numSub, catSub, corrSub };
+  }
+
+  function buildReviewFidelityHtml(frep) {
+    if (!state.syntheticRows.length) {
+      return `<p class="panel-lead review-fidelity-lead">Generate synthetic data to see a fidelity readout.</p>`;
+    }
+    if (frep.score == null) {
+      return `<div class="review-fidelity-card"><p class="panel-lead">${frep.bullets.map((b) => `${b}`).join(" ")}</p></div>`;
+    }
+    const blis = frep.bullets.map((b) => `<li>${b}</li>`).join("");
+    return `<div class="review-fidelity-card" role="region" aria-label="Fidelity score and rationale">
+      <div class="review-fidelity-score-row">
+        <div class="review-fidelity-score" aria-label="Fidelity score ${frep.score} out of 100">${frep.score}<span class="review-fidelity-score-max">/100</span></div>
+        <div class="review-fidelity-tier"><span class="review-fidelity-tier-label">${escapeHtml(frep.tier)}</span><span class="review-fidelity-tier-hint">heuristic blend</span></div>
+      </div>
+      <p class="review-fidelity-lead">Single number summary of how closely this synthetic run matches the <strong>working original</strong> on marginals, top categories, and linear correlations. Use it as a quick sanity signal, not a certification.</p>
+      <h4 class="review-fidelity-sub">Why this rating</h4>
+      <ul class="review-fidelity-why">${blis}</ul>
+    </div>`;
+  }
+
+  function buildReviewNumericDetailHtml() {
+    if (!state.syntheticRows.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">Numeric detail appears after you generate synthetic data.</p>`;
+    }
+    const inc = getColumnIncludeMap();
+    const colStatsOrig = inferColumnStats(state.headers, state.rows);
+    const rowsHtml = [];
+    for (const h of state.headers) {
+      if (inc[h] === false) continue;
+      const st = colStatsOrig.find((x) => x.name === h);
+      const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
+      if (kind !== "numeric") continue;
+      const o = summarizeNumericColumn(state.rows, h);
+      const s = summarizeNumericColumn(state.syntheticRows, h);
+      if (!o || !s) continue;
+      const fmtRow = (label, snap) =>
+        `<tr><th scope="row">${escapeHtml(label)}</th><td>${formatReviewStat(snap.min)}</td><td>${formatReviewStat(snap.max)}</td><td>${formatReviewStat(snap.std)}</td><td>${formatReviewStat(snap.p5)}</td><td>${formatReviewStat(snap.p25)}</td><td>${formatReviewStat(snap.median)}</td><td>${formatReviewStat(snap.p75)}</td><td>${formatReviewStat(snap.p95)}</td><td>${formatReviewStat(snap.mean)}</td></tr>`;
+      rowsHtml.push(
+        `<tbody class="review-num-detail-group">
+          <tr class="review-num-detail-colhead"><th colspan="10" scope="colgroup">${escapeHtml(h)}</th></tr>
+          ${fmtRow("Original (working)", o)}
+          ${fmtRow("Synthetic", s)}
+        </tbody>`
+      );
+    }
+    if (!rowsHtml.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">No numeric columns in the synthetic schema to compare.</p>`;
+    }
+    const thead = `<thead><tr><th scope="col">Dataset</th><th scope="col">Min</th><th scope="col">Max</th><th scope="col">Std dev</th><th scope="col">P5</th><th scope="col">P25</th><th scope="col">P50</th><th scope="col">P75</th><th scope="col">P95</th><th scope="col">Mean</th></tr></thead>`;
+    return `<div class="table-wrap review-num-detail-wrap"><table class="data-table review-num-detail-table">${thead}${rowsHtml.join("")}</table></div>
+      <p class="panel-lead meta-changes-lead-tight">Percentiles use linear interpolation on sorted non-null values. Each dataset uses its own row count and missingness pattern.</p>`;
+  }
+
+  function buildReviewCorrelationCompareHtml(frep) {
+    if (!state.syntheticRows.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">Correlation comparison appears after you generate synthetic data.</p>`;
+    }
+    const pairs = (frep.corrPairs || []).slice().sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    if (!pairs.length) {
+      return `<p class="panel-lead meta-changes-lead-tight">Need at least two numeric columns in the schema with enough pairwise-complete rows to compare correlations.</p>`;
+    }
+    const lim = 48;
+    const body = pairs.slice(0, lim)
+      .map(
+        (p) =>
+          `<tr><th scope="row">${escapeHtml(p.a)} ↔ ${escapeHtml(p.b)}</th><td>${formatReviewStat(p.rOrig, 3)}</td><td>${formatReviewStat(p.rSynth, 3)}</td><td>${p.delta >= 0 ? "+" : ""}${formatReviewStat(p.delta, 3)}</td><td>${p.nPair.toLocaleString()}</td></tr>`
+      )
+      .join("");
+    const more = pairs.length > lim ? `<p class="panel-lead meta-changes-lead-tight">Showing the ${lim} pairs with largest absolute Δ; ${pairs.length} total.</p>` : "";
+    return `<div class="table-wrap"><table class="data-table review-corr-compare-table"><thead><tr><th scope="col">Column pair</th><th scope="col"><em>r</em> original</th><th scope="col"><em>r</em> synthetic</th><th scope="col">Δ (synth − orig)</th><th scope="col">Pairwise <em>n</em> (original)</th></tr></thead><tbody>${body}</tbody></table></div>${more}`;
+  }
+
+  function buildReviewSyntheticCheckPayload(frep) {
+    const inc = getColumnIncludeMap();
+    const hdrs = state.headers.filter((h) => inc[h] !== false).slice(0, 40);
+    const numeric_deltas = (frep.numMetrics || []).slice(0, 24).map((m) => ({
+      column: m.col,
+      orig_mean: m.o.mean,
+      synth_mean: m.s.mean,
+      orig_std: m.o.std,
+      synth_std: m.s.std,
+    }));
+    const correlation_deltas = (frep.corrPairs || []).slice(0, 32).map((p) => ({
+      column_a: p.a,
+      column_b: p.b,
+      r_orig: p.rOrig,
+      r_synth: p.rSynth,
+    }));
+    const colStatsOnce = inferColumnStats(state.headers, state.rows);
+    const catRows = [];
+    for (const h of hdrs) {
+      if (catRows.length >= 16) break;
+      const st = colStatsOnce.find((x) => x.name === h);
+      const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
+      if (kind === "numeric") continue;
+      const o = summarizeTextColumn(state.rows, h);
+      const sy = summarizeTextColumn(state.syntheticRows, h);
+      if (!o.nonNull && !sy.nonNull) continue;
+      catRows.push({
+        column: h,
+        orig_distinct: o.distinct,
+        synth_distinct: sy.distinct,
+        orig_top_pct: o.topPct,
+        synth_top_pct: sy.topPct,
+      });
+    }
+    const rationale = (frep.bullets || []).map((b) => b.replace(/<[^>]+>/g, "")).join(" ");
+    return {
+      file_name: state.fileName || "dataset.csv",
+      synthetic_goal: (state.syntheticGoal || "").slice(0, 2000),
+      orig_row_count: state.rows.length,
+      synth_row_count: state.syntheticRows.length,
+      fidelity_score: frep.score != null ? frep.score : 0,
+      fidelity_tier: frep.tier || "",
+      fidelity_rationale: rationale.slice(0, 2400),
+      headers_sample: hdrs,
+      numeric_deltas,
+      correlation_deltas,
+      categorical_deltas: catRows,
+      sample_orig_rows: buildSampleRowsForApi(state.rows, state.headers, 10),
+      sample_synth_rows: buildSampleRowsForApi(state.syntheticRows, state.headers, 10),
+    };
   }
 
   function buildReviewDashboardHtml() {
@@ -1719,7 +2100,7 @@
       <div class="stat-card"><div class="stat-value">${when}</div><div class="stat-label">Generated at</div></div>
     </div>
     <div class="review-goal-block"><strong>Goal:</strong> ${escapeHtml(goal)}</div>
-    <h3 class="review-subtitle">Sample (first 12 synthetic rows)</h3>
+    <h4 class="review-dash-sample-title">Sample (first 12 synthetic rows)</h4>
     <div class="table-wrap"><table class="data-table"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
   }
 
@@ -1770,13 +2151,67 @@
   }
 
   function renderReviewPage() {
+    const frep = computeSyntheticFidelityReport();
+    if (els.reviewFidelityRoot) els.reviewFidelityRoot.innerHTML = buildReviewFidelityHtml(frep);
     if (els.reviewDashboardRoot) els.reviewDashboardRoot.innerHTML = buildReviewDashboardHtml();
     if (els.reviewDistributionsRoot) {
       destroyChartList(state.reviewCharts);
       els.reviewDistributionsRoot.innerHTML = buildReviewDistributionsHtml();
       renderReviewDistributionCharts();
     }
+    if (els.reviewNumericDetailRoot) els.reviewNumericDetailRoot.innerHTML = buildReviewNumericDetailHtml();
+    if (els.reviewCorrelationRoot) els.reviewCorrelationRoot.innerHTML = buildReviewCorrelationCompareHtml(frep);
     if (els.reviewCompareRoot) els.reviewCompareRoot.innerHTML = buildReviewCompareHtml();
+    if (els.reviewAiCheckBody) els.reviewAiCheckBody.innerHTML = "";
+    if (els.btnReviewAiCheck) els.btnReviewAiCheck.disabled = !state.syntheticRows.length;
+  }
+
+  async function runReviewSyntheticAiCheck() {
+    if (!els.btnReviewAiCheck || !els.reviewAiCheckBody) return;
+    if (!state.syntheticRows.length) {
+      toast("Generate synthetic data first.");
+      return;
+    }
+    const frep = computeSyntheticFidelityReport();
+    const payload = buildReviewSyntheticCheckPayload(frep);
+    els.btnReviewAiCheck.disabled = true;
+    els.reviewAiCheckBody.classList.remove("hidden");
+    els.reviewAiCheckBody.innerHTML = `<p class="panel-lead meta-changes-lead-tight">Calling the review assistant…</p>`;
+    try {
+      const res = await fetch(`${apiBase()}/api/review-synthetic-check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const raw = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        let msg = res.statusText;
+        if (typeof raw.detail === "string") msg = raw.detail;
+        else if (Array.isArray(raw.detail))
+          msg = raw.detail.map((d) => (d.msg != null ? d.msg : JSON.stringify(d))).join("; ");
+        throw new Error(msg || `Request failed (${res.status})`);
+      }
+      const summary = escapeHtml(String(raw.summary || "").trim() || "Assessment complete.");
+      const pts = Array.isArray(raw.points) ? raw.points : [];
+      const lis = pts
+        .map((p) => {
+          const sev = sevClass(p.sev);
+          const title = escapeHtml(String(p.title || "Note").trim());
+          const detail = escapeHtml(String(p.detail || "").trim());
+          return `<li class="issue-item"><span class="issue-severity ${sev}">${escapeHtml(sev)}</span><div class="issue-body"><strong>${title}</strong><span>${detail}</span></div></li>`;
+        })
+        .join("");
+      els.reviewAiCheckBody.innerHTML = `<div class="review-ai-summary panel-lead">${summary}</div>${
+        lis ? `<ul class="issue-list review-ai-points">${lis}</ul>` : ""
+      }`;
+    } catch (err) {
+      console.error(err);
+      const reason = err && err.message ? err.message : String(err);
+      els.reviewAiCheckBody.innerHTML = `<p class="panel-lead review-ai-error">Could not run the assistant (${escapeHtml(reason)}). Use the same host as <code>python server.py</code> and ensure <code>OPENAI_API_KEY</code> is set.</p>`;
+      toast(reason);
+    } finally {
+      els.btnReviewAiCheck.disabled = !state.syntheticRows.length;
+    }
   }
 
   function extractNumericColumnValues(rows, colName) {
@@ -4084,7 +4519,8 @@
   }
 
   function setStep(n) {
-    if (n < 0 || n > 5) return;
+    const maxStep = STEPS.length - 1;
+    if (n < 0 || n > maxStep) return;
     if (n >= 1 && !state.rows.length) return;
     const prev = state.step;
     state.step = n;
@@ -4097,6 +4533,7 @@
     if (els.viewSynthetic) els.viewSynthetic.classList.toggle("hidden", n !== 3);
     if (els.viewReview) els.viewReview.classList.toggle("hidden", n !== 4);
     if (els.viewAnalyze) els.viewAnalyze.classList.toggle("hidden", n !== 5);
+    if (els.viewFinalize) els.viewFinalize.classList.toggle("hidden", n !== 6);
     if (n === 1) renderInspect();
     if (n === 2) {
       if (state.metadataPane === "editor") renderMetadata();
@@ -4629,6 +5066,10 @@
       });
     }
 
+    if (els.btnReviewAiCheck) {
+      els.btnReviewAiCheck.addEventListener("click", () => void runReviewSyntheticAiCheck());
+    }
+
     if (els.syntheticGoal) {
       els.syntheticGoal.addEventListener("input", () => {
         state.syntheticGoal = els.syntheticGoal.value;
@@ -4644,7 +5085,7 @@
       });
     }
     if (els.btnGenerateSynthetic) {
-      els.btnGenerateSynthetic.addEventListener("click", () => {
+      els.btnGenerateSynthetic.addEventListener("click", async () => {
         if (!state.rows.length) return;
         const goal = els.syntheticGoal ? els.syntheticGoal.value.trim() : "";
         const n = els.syntheticRowCount ? Number(els.syntheticRowCount.value) : 5000;
@@ -4658,22 +5099,65 @@
         }
         state.syntheticGoal = goal;
         state.syntheticRowCount = Math.floor(n);
-        if (els.syntheticGenStatus) els.syntheticGenStatus.textContent = "Generating…";
+
+        const btn = els.btnGenerateSynthetic;
+        const busyEl = els.syntheticGenBusy;
+        const busyTextEl = els.syntheticGenBusyText;
+        let phaseTimeouts = [];
+
+        const startBusyUi = () => {
+          if (busyTextEl) busyTextEl.textContent = SYNTH_GENERATE_STATUS_PHASES[0];
+          if (busyEl) busyEl.hidden = false;
+          btn.disabled = true;
+          btn.setAttribute("aria-busy", "true");
+          let acc = 0;
+          for (let i = 1; i < SYNTH_GENERATE_STATUS_PHASES.length; i++) {
+            acc += SYNTH_GENERATE_PHASE_HOLD_MS[i - 1];
+            const phaseIx = i;
+            phaseTimeouts.push(
+              window.setTimeout(() => {
+                if (busyTextEl) busyTextEl.textContent = SYNTH_GENERATE_STATUS_PHASES[phaseIx];
+              }, acc)
+            );
+          }
+        };
+
+        const stopBusyUi = () => {
+          phaseTimeouts.forEach((id) => window.clearTimeout(id));
+          phaseTimeouts = [];
+          btn.disabled = false;
+          btn.removeAttribute("aria-busy");
+          if (busyEl) busyEl.hidden = true;
+          if (busyTextEl) busyTextEl.textContent = "";
+        };
+
+        startBusyUi();
         let rows;
         try {
-          rows = generateSyntheticRowsFromMetadata(state.syntheticRowCount, state.syntheticGoal);
+          await Promise.all([
+            sleep(SYNTH_GENERATE_MIN_UI_MS),
+            new Promise((resolve, reject) => {
+              queueMicrotask(() => {
+                try {
+                  rows = generateSyntheticRowsFromMetadata(state.syntheticRowCount, state.syntheticGoal);
+                  resolve();
+                } catch (e) {
+                  reject(e);
+                }
+              });
+            }),
+          ]);
         } catch (err) {
           console.error(err);
-          if (els.syntheticGenStatus) els.syntheticGenStatus.textContent = "";
+          stopBusyUi();
           toast(err.message || "Generation failed.");
           return;
         }
+        stopBusyUi();
+
         state.syntheticRows = rows;
         state.syntheticGeneratedAtUtc = new Date().toISOString();
-        if (els.syntheticGenStatus) {
-          els.syntheticGenStatus.textContent = `Generated ${state.syntheticRows.length.toLocaleString()} rows.`;
-        }
-        if (els.btnDownloadSynthetic) els.btnDownloadSynthetic.classList.remove("hidden");
+        renderSyntheticPage();
         saveSession();
         toast("Synthetic dataset ready. Continue to review or download CSV.");
       });
@@ -4699,6 +5183,15 @@
     if (els.btnBackAnalyze) {
       els.btnBackAnalyze.addEventListener("click", () => setStep(4));
     }
+    if (els.btnProceedFinalize) {
+      els.btnProceedFinalize.addEventListener("click", () => {
+        if (!state.rows.length) return;
+        setStep(6);
+      });
+    }
+    if (els.btnBackFinalize) {
+      els.btnBackFinalize.addEventListener("click", () => setStep(5));
+    }
 
     els.stepper.addEventListener("click", (e) => {
       const item = e.target.closest(".stepper-item");
@@ -4714,6 +5207,7 @@
       if (i === 3 && state.rows.length) setStep(3);
       if (i === 4 && state.rows.length) setStep(4);
       if (i === 5 && state.rows.length) setStep(5);
+      if (i === 6 && state.rows.length) setStep(6);
     });
   }
 

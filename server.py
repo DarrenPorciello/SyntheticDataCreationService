@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -199,6 +200,101 @@ class MetadataSuggestResponse(BaseModel):
     suggestions: list[MetadataSuggestionItemOut]
 
 
+class ReviewNumericDeltaIn(BaseModel):
+    column: str = ""
+    orig_mean: float | None = None
+    synth_mean: float | None = None
+    orig_std: float | None = None
+    synth_std: float | None = None
+
+
+class ReviewCorrDeltaIn(BaseModel):
+    column_a: str = ""
+    column_b: str = ""
+    r_orig: float | None = None
+    r_synth: float | None = None
+
+
+class ReviewCatDeltaIn(BaseModel):
+    column: str = ""
+    orig_distinct: int = Field(ge=0, default=0)
+    synth_distinct: int = Field(ge=0, default=0)
+    orig_top_pct: float | None = None
+    synth_top_pct: float | None = None
+
+
+class ReviewSyntheticCheckRequest(BaseModel):
+    file_name: str = Field(default="", max_length=240)
+    synthetic_goal: str = Field(default="", max_length=4000)
+    orig_row_count: int = Field(ge=0)
+    synth_row_count: int = Field(ge=0)
+    fidelity_score: int = Field(ge=0, le=100)
+    fidelity_tier: str = Field(default="", max_length=48)
+    fidelity_rationale: str = Field(default="", max_length=4500)
+    headers_sample: list[str] = Field(default_factory=list, max_length=40)
+    numeric_deltas: list[ReviewNumericDeltaIn] = Field(default_factory=list, max_length=36)
+    correlation_deltas: list[ReviewCorrDeltaIn] = Field(default_factory=list, max_length=48)
+    categorical_deltas: list[ReviewCatDeltaIn] = Field(default_factory=list, max_length=24)
+    sample_orig_rows: list[dict[str, str]] = Field(default_factory=list, max_length=12)
+    sample_synth_rows: list[dict[str, str]] = Field(default_factory=list, max_length=12)
+
+
+class ReviewSyntheticPointOut(BaseModel):
+    title: str
+    detail: str
+    sev: str = "medium"
+
+
+class ReviewSyntheticCheckResponse(BaseModel):
+    summary: str
+    points: list[ReviewSyntheticPointOut]
+
+
+SYNTH_AI_MAX_ROWS = int(os.getenv("SYNTH_AI_MAX_ROWS", "120"))
+SYNTH_AI_MAX_OUTPUT_TOKENS = int(os.getenv("SYNTH_AI_MAX_OUTPUT_TOKENS", "32000"))
+
+
+SYNTH_AI_MAX_INPUT_CHARS = int(os.getenv("SYNTH_AI_MAX_INPUT_CHARS", "180000"))
+
+
+class SyntheticAiRequest(BaseModel):
+    headers: list[str] = Field(default_factory=list, max_length=120)
+    row_count: int = Field(ge=1, le=500)
+    goal: str = Field(default="", max_length=4000)
+    # Column marginals + optional correlation block (plain text CSV). Preferred over JSON for token limits.
+    baseline_metadata_csv: str = Field(default="", max_length=650_000)
+    # Optional legacy small JSON baseline; ignored when baseline_metadata_csv is sent.
+    baseline_metadata: dict[str, Any] | None = None
+    sample_rows: list[dict[str, str]] = Field(default_factory=list, max_length=12)
+
+
+class SyntheticAiResponse(BaseModel):
+    rows: list[dict[str, str]]
+    model: str
+    rows_in_response: int
+    note: str = ""
+
+
+def _normalize_ai_synth_row(row: object, headers: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not isinstance(row, dict):
+        row = {}
+    for h in headers:
+        v = row.get(h, "")
+        if v is None:
+            out[h] = ""
+        elif isinstance(v, bool):
+            out[h] = "true" if v else "false"
+        elif isinstance(v, (int, float)):
+            out[h] = str(v)
+        else:
+            s = str(v).replace("\r\n", "\n").replace("\r", "\n")
+            if len(s) > 8000:
+                s = s[:7999] + "…"
+            out[h] = s
+    return out
+
+
 app = FastAPI(title="Southlake Synthetic Data Studio API")
 
 app.add_middleware(
@@ -224,6 +320,22 @@ def _parse_json_object(content: str) -> dict:
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text)
     return json.loads(text)
+
+
+def _normalize_review_points(raw: list) -> list[ReviewSyntheticPointOut]:
+    out: list[ReviewSyntheticPointOut] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:12]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip() or "Note"
+        detail = str(item.get("detail", "")).strip() or "—"
+        sev = str(item.get("sev", "medium")).lower()
+        if sev not in ("high", "medium", "low"):
+            sev = "medium"
+        out.append(ReviewSyntheticPointOut(title=title[:200], detail=detail[:1200], sev=sev))
+    return out
 
 
 def _normalize_issues(raw: list) -> list[IssueOut]:
@@ -465,6 +577,238 @@ Rules: Never invent column names. Avoid repeating the same idea twice. Do not me
     suggestions = _normalize_metadata_suggestions(data.get("suggestions", []))
 
     return MetadataSuggestResponse(summary=summary[:1200], suggestions=suggestions)
+
+
+@app.post("/api/review-synthetic-check", response_model=ReviewSyntheticCheckResponse)
+async def review_synthetic_check(body: ReviewSyntheticCheckRequest):
+    """OpenAI: short synthetic-vs-original review from compact client summaries and small samples."""
+    api_key = _openai_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not set in the server environment.")
+
+    hdrs = [str(h) for h in body.headers_sample if str(h).strip()][:40]
+    sample_o: list[dict[str, str]] = []
+    sample_s: list[dict[str, str]] = []
+    for row in body.sample_orig_rows[:12]:
+        if not isinstance(row, dict):
+            continue
+        slim: dict[str, str] = {}
+        for h in hdrs:
+            if h in row:
+                slim[h] = _truncate_cell(row[h])
+        sample_o.append(slim)
+    for row in body.sample_synth_rows[:12]:
+        if not isinstance(row, dict):
+            continue
+        slim: dict[str, str] = {}
+        for h in hdrs:
+            if h in row:
+                slim[h] = _truncate_cell(row[h])
+        sample_s.append(slim)
+
+    payload = {
+        "file_name": body.file_name,
+        "synthetic_goal": (body.synthetic_goal or "").strip()[:2000],
+        "orig_row_count": body.orig_row_count,
+        "synth_row_count": body.synth_row_count,
+        "fidelity_score_0_100": body.fidelity_score,
+        "fidelity_tier_label": (body.fidelity_tier or "").strip(),
+        "fidelity_rationale_bullets_plain_text": (body.fidelity_rationale or "").strip()[:4000],
+        "numeric_deltas": [d.model_dump() for d in body.numeric_deltas[:36]],
+        "correlation_deltas": [d.model_dump() for d in body.correlation_deltas[:48]],
+        "categorical_deltas": [d.model_dump() for d in body.categorical_deltas[:24]],
+        "sample_orig_rows": sample_o,
+        "sample_synth_rows": sample_s,
+    }
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    system = """You are a senior data steward reviewing **synthetic tabular data** against a **real working table** in the same project.
+
+You receive JSON only (no raw database): file name, row counts, a short user goal for the synthetic run, a heuristic fidelity score and plain-text rationale produced by software, compact numeric mean/std deltas per column, Pearson correlation deltas for numeric pairs, categorical distinct counts and top-category share deltas, and two tiny row samples (original vs synthetic).
+
+Your job:
+1. Write a **summary** (3–5 sentences) tuned to **this** dataset: what looks aligned, what diverges, and what a human reviewer should double-check before trusting the synthetic file for their intended use (testing, demos, modeling, etc.). Speak plainly; avoid repeating the numeric tables verbatim.
+2. Return **points**: 4–8 short review bullets. Each item: title (≤12 words), detail (1–2 sentences), sev high|medium|low based on practical risk to misuse (not statistical p-values). Cover correlation structure, tails/percentiles if implied by deltas, category cardinality shifts, and row-count mismatch when relevant. If the sample might resemble real people, do not quote exact values from cells; refer to columns instead.
+
+Respond with ONLY valid JSON (no markdown fences):
+{"summary": string, "points": [{"title": string, "detail": string, "sev": "high"|"medium"|"low"}]}"""
+
+    user = json.dumps(payload, ensure_ascii=False)
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+        completion = await client.chat.completions.create(
+            model=model,
+            temperature=0.35,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OpenAI request failed: {e!s}") from e
+
+    content = completion.choices[0].message.content
+    if not content:
+        raise HTTPException(status_code=502, detail="Empty response from model.")
+
+    try:
+        data = _parse_json_object(content)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Model returned invalid JSON: {e}") from e
+
+    summary = str(data.get("summary", "")).strip() or "Review complete."
+    points = _normalize_review_points(data.get("points", []))
+    if not points:
+        points = [
+            ReviewSyntheticPointOut(
+                sev="low",
+                title="No structured points returned",
+                detail="The model did not return point items; rely on the summary and the in-app tables.",
+            )
+        ]
+
+    return ReviewSyntheticCheckResponse(summary=summary[:3500], points=points)
+
+
+@app.post("/api/synthetic-generate-ai", response_model=SyntheticAiResponse)
+async def synthetic_generate_ai(body: SyntheticAiRequest):
+    """Generate synthetic rows via OpenAI using client-supplied *baseline* metadata (no user overrides)."""
+    api_key = _openai_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not set in the server environment.")
+
+    hdrs = [str(h) for h in body.headers if str(h).strip()]
+    if not hdrs:
+        raise HTTPException(status_code=400, detail="headers is required.")
+
+    n_req = min(int(body.row_count), SYNTH_AI_MAX_ROWS)
+    note_parts: list[str] = []
+    if int(body.row_count) > SYNTH_AI_MAX_ROWS:
+        note_parts.append(f"Row count capped to {SYNTH_AI_MAX_ROWS} for this API (requested {body.row_count}).")
+
+    sample: list[dict[str, str]] = []
+    for row in body.sample_rows[:10]:
+        if not isinstance(row, dict):
+            continue
+        slim: dict[str, str] = {}
+        for h in hdrs:
+            if h in row:
+                slim[h] = _truncate_cell(row[h])
+        sample.append(slim)
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    csv_part = (body.baseline_metadata_csv or "").strip()
+    legacy_meta = body.baseline_metadata if isinstance(body.baseline_metadata, dict) else {}
+    use_legacy_json = len(csv_part) < 40 and bool(legacy_meta)
+
+    if not use_legacy_json and len(csv_part) < 20:
+        raise HTTPException(
+            status_code=400,
+            detail="Send baseline_metadata_csv (column marginals as CSV). It is required for normal requests.",
+        )
+
+    system = f"""You generate synthetic tabular data for privacy-safe testing.
+
+You MUST respond with ONLY valid JSON (no markdown, no code fences) matching exactly this shape:
+{{"rows": [ ... ]}}
+
+Rules:
+- The array "rows" MUST contain exactly {n_req} objects (no more, no fewer).
+- Every object MUST have these keys exactly once, in this order: {json.dumps(hdrs, ensure_ascii=False)}
+- Every value MUST be a JSON string (use digits and optional sign/dot for numbers). Use "" for intentionally missing values when missing_rate in the CSV suggests emptiness.
+- The user message includes **column_marginals_csv**: a CSV file (header row + one row per column) with columns:
+  name, included (1=yes 0=excluded from schema), dtype (numeric|text), missing_rate (0–1),
+  n_min, n_max, n_mean, n_std (numeric summaries; empty if not numeric),
+  hist_bin_p (pipe | separated bin proportions left-to-right for equal-width histogram on that column),
+  cat_value_props (semicolon ; separated items value:proportion for categorical marginals; values may use middle-dot instead of colon inside text).
+  There may be a second section starting with a line "=== correlation_pearson_observed" — Pearson r matrix (-1..1); honor approximate linear structure between numeric columns when sampling if reasonable.
+- Respect dtype and included: excluded columns (included=0) must be "" in output.
+- Do NOT copy any row from sample_rows_json verbatim; use it only for formatting cues.
+- Invent plausible values; never claim to be real individuals or use real identifiers from the sample."""
+
+    sample_json = json.dumps(sample, ensure_ascii=False)
+    if use_legacy_json:
+        legacy_dump = json.dumps(
+            {"baseline_metadata": legacy_meta, "sample_rows": sample, "row_count": n_req, "goal": (body.goal or "").strip()[:4000]},
+            ensure_ascii=False,
+        )
+        user = f"headers_json: {json.dumps(hdrs, ensure_ascii=False)}\nlegacy_json_payload:\n{legacy_dump}"
+        if len(user) > SYNTH_AI_MAX_INPUT_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail="Legacy baseline_metadata JSON is too large; use baseline_metadata_csv from the app instead.",
+            )
+    else:
+        user = (
+            f"task: generate_synthetic_rows\n"
+            f"row_count: {n_req}\n"
+            f"headers_json: {json.dumps(hdrs, ensure_ascii=False)}\n"
+            f"goal: {(body.goal or '').strip()[:4000]}\n\n"
+            f"column_marginals_csv:\n{csv_part}\n\n"
+            f"sample_rows_json:\n{sample_json}\n"
+        )
+        if len(user) > SYNTH_AI_MAX_INPUT_CHARS:
+            keep = max(5000, SYNTH_AI_MAX_INPUT_CHARS - len(sample_json) - 2000)
+            csv_part = csv_part[:keep] + "\n# …truncated…\n"
+            user = (
+                f"task: generate_synthetic_rows\n"
+                f"row_count: {n_req}\n"
+                f"headers_json: {json.dumps(hdrs, ensure_ascii=False)}\n"
+                f"goal: {(body.goal or '').strip()[:4000]}\n\n"
+                f"column_marginals_csv:\n{csv_part}\n\n"
+                f"sample_rows_json:\n{sample_json}\n"
+            )
+            note_parts.append("column_marginals_csv was truncated to fit the model input size limit.")
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+        completion = await client.chat.completions.create(
+            model=model,
+            temperature=0.35,
+            max_tokens=SYNTH_AI_MAX_OUTPUT_TOKENS,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OpenAI request failed: {e!s}") from e
+
+    content = completion.choices[0].message.content
+    if not content:
+        raise HTTPException(status_code=502, detail="Empty response from model.")
+
+    try:
+        data = _parse_json_object(content)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Model returned invalid JSON: {e}") from e
+
+    raw_rows = data.get("rows")
+    if not isinstance(raw_rows, list):
+        raise HTTPException(status_code=502, detail='Model JSON must contain a "rows" array.')
+
+    fixed: list[dict[str, str]] = []
+    for i, row in enumerate(raw_rows):
+        if i >= n_req:
+            break
+        fixed.append(_normalize_ai_synth_row(row, hdrs))
+
+    if len(fixed) < n_req:
+        note_parts.append(f"Model returned {len(fixed)} of {n_req} rows.")
+    if len(fixed) == 0:
+        raise HTTPException(status_code=502, detail="Model returned no rows.")
+
+    return SyntheticAiResponse(
+        rows=fixed,
+        model=model,
+        rows_in_response=len(fixed),
+        note=" ".join(note_parts).strip(),
+    )
 
 
 @app.get("/")

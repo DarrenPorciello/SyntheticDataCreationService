@@ -421,10 +421,8 @@
         <div class="panel">
           <h2 class="panel-title" id="synthetic-heading">Synthetic data generation</h2>
           <p class="panel-lead" id="synthetic-original-lead">
-            The <strong>original uploaded CSV</strong> is kept in this browser session for comparison and as the profiling
-            source. By default, generation matches the metadata built from the <strong>full working table</strong>
-            (marginals, missingness). Distribution sliders, manual targets, and accepted AI coach tips override that where
-            you set them. Joint numeric correlation structure is not fully simulated yet.
+            The <strong>original uploaded CSV</strong> is kept in this browser session for comparison. Generation uses your
+            metadata package (marginals and any overrides you set). The sampler runs in your browser from that metadata.
           </p>
           <div class="synthetic-gen-panel">
             <div class="modal-field">
@@ -435,8 +433,33 @@
               <label for="synthetic-row-count">Number of rows to generate</label>
               <input type="number" id="synthetic-row-count" class="modal-input" min="1" max="100000" step="1" value="5000" />
             </div>
-            <div class="synthetic-gen-actions no-print">
-              <button type="button" class="btn btn-primary" id="btn-generate-synthetic">Generate synthetic dataset</button>
+            <div class="synthetic-gen-row no-print">
+              <button type="button" class="btn btn-primary" id="btn-generate-synthetic">
+                <span class="synthetic-gen-btn-label-row">
+                  <svg
+                    class="synthetic-gen-ai-icon"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09zM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456zM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423z"
+                      fill="currentColor"
+                      fill-opacity="0.92"
+                    />
+                  </svg>
+                  <span>Generate synthetic dataset</span>
+                </span>
+              </button>
+              <div id="synthetic-gen-busy" class="synthetic-gen-busy" hidden role="status" aria-live="polite">
+                <span class="synthetic-gen-spinner" aria-hidden="true"></span>
+                <span id="synthetic-gen-busy-text" class="synthetic-gen-busy-text"></span>
+              </div>
+            </div>
+            <div class="synthetic-gen-actions synthetic-gen-actions--secondary no-print">
               <button type="button" class="btn btn-secondary hidden" id="btn-download-synthetic">Download synthetic CSV</button>
               <button type="button" class="btn btn-ghost btn-sm" id="btn-download-original-csv">Download original CSV</button>
             </div>
@@ -452,20 +475,120 @@
       <section id="view-review" class="hidden" aria-labelledby="review-heading">
         <div class="panel">
           <h2 class="panel-title" id="review-heading">Review synthetic output</h2>
-          <p class="panel-lead">
-            Dashboard for the generated dataset and a side-by-side view of key properties versus your <strong>original</strong>
-            upload (current working table in the session).
+          <p class="panel-lead review-page-lead">
+            Use the sections below to validate synthetic output against your <strong>working original</strong>. Each block can be
+            collapsed when you want a shorter page; they start <strong>expanded</strong>.
           </p>
-          <div id="review-dashboard-root" class="review-dashboard-root" aria-live="polite"></div>
-          <h3 class="review-subtitle">Distributions — original vs synthetic</h3>
-          <p class="panel-lead review-dist-intro">
-            Same palette as <strong>Data inspection</strong> (light blue vs light red). Bars show <strong>each dataset’s own
-            proportions</strong> (shares of rows within that set, so totals differ but shapes are comparable). Overlapping bars
-            read as purple where both are strong.
-          </p>
-          <div id="review-distributions-root" class="review-distributions-root" aria-live="polite"></div>
-          <h3 class="review-subtitle">Original vs synthetic — properties</h3>
-          <div id="review-compare-root" class="review-compare-root" aria-live="polite"></div>
+
+          <details class="review-section" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Rough fidelity</span>
+                <span class="review-section-meta">Heuristic score &amp; why it was assigned</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <div id="review-fidelity-root" class="review-fidelity-root" aria-live="polite"></div>
+            </div>
+          </details>
+
+          <details class="review-section" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Overview &amp; sample rows</span>
+                <span class="review-section-meta">Counts, goal, first 12 synthetic lines</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead review-section-lead">High-level shape of the run and a small peek at generated cell values.</p>
+              <div id="review-dashboard-root" class="review-dashboard-root" aria-live="polite"></div>
+            </div>
+          </details>
+
+          <details class="review-section" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Distributions</span>
+                <span class="review-section-meta">Original vs synthetic — shares within each set</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead review-dist-intro">
+                Same palette as <strong>Data inspection</strong> (light blue vs light red). Bars show <strong>each dataset’s own
+                proportions</strong> (shares of rows within that set, so totals differ but shapes are comparable). Overlapping bars
+                read as purple where both are strong.
+              </p>
+              <div id="review-distributions-root" class="review-distributions-root" aria-live="polite"></div>
+            </div>
+          </details>
+
+          <details class="review-section" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Numeric detail</span>
+                <span class="review-section-meta">Min, max, std dev, percentiles, mean</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead review-numeric-intro">
+                Side-by-side for each numeric column in the synthetic schema: tails (P5 / P95), quartiles, median, mean, and spread vs. the working original.
+              </p>
+              <div id="review-numeric-detail-root" class="review-numeric-detail-root" aria-live="polite"></div>
+            </div>
+          </details>
+
+          <details class="review-section" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Correlation structure</span>
+                <span class="review-section-meta">Pearson <em>r</em> — original vs synthetic pairs</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead review-corr-intro">
+                Pearson <em>r</em> on pairwise-complete rows within each dataset (same column pairs). Large absolute Δ often means linear dependencies were not preserved — expected for the current browser sampler when correlation targets were not applied.
+              </p>
+              <div id="review-correlation-root" class="review-correlation-root" aria-live="polite"></div>
+            </div>
+          </details>
+
+          <details class="review-section" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Column properties</span>
+                <span class="review-section-meta">Mean / std / categories — compact comparison</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead review-section-lead">One row per column: quick read on means, spread, and category mix vs. the working original.</p>
+              <div id="review-compare-root" class="review-compare-root" aria-live="polite"></div>
+            </div>
+          </details>
+
+          <details class="review-section" open>
+            <summary class="review-section-summary">
+              <span class="review-section-chevron" aria-hidden="true"></span>
+              <span class="review-section-heading">
+                <span class="review-section-title">Dataset-specific review assistant</span>
+                <span class="review-section-meta">Optional OpenAI — summaries &amp; small samples only</span>
+              </span>
+            </summary>
+            <div class="review-section-body">
+              <p class="panel-lead review-ai-intro">
+                Sends your fidelity summary, compact numeric and correlation deltas, category headlines, the synthetic goal, and small row samples — not full tables. Avoid regulated identifiers in samples if your environment is not approved for model providers.
+              </p>
+              <div class="review-ai-actions no-print">
+                <button type="button" class="btn btn-secondary" id="btn-review-ai-check">Run AI review assistant</button>
+              </div>
+              <div id="review-ai-check-body" class="review-ai-check-body" aria-live="polite"></div>
+            </div>
+          </details>
         </div>
         <div class="actions">
           <button type="button" class="btn btn-ghost" id="btn-back-synthetic">Back to synthetic data</button>
@@ -480,6 +603,16 @@
         </div>
         <div class="actions">
           <button type="button" class="btn btn-ghost" id="btn-back-analyze">Back to review</button>
+          <button type="button" class="btn btn-primary" id="btn-proceed-finalize">Continue to finalize</button>
+        </div>
+      </section>
+
+      <section id="view-finalize" class="hidden" aria-labelledby="finalize-heading">
+        <div class="panel">
+          <h2 class="panel-title" id="finalize-heading">Finalize</h2>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn btn-ghost" id="btn-back-finalize">Back to analyze</button>
         </div>
       </section>
     </main>
