@@ -15,6 +15,7 @@
   ];
 
   const METADATA_NOTE_SECTIONS = ["dashboard", "ai", "summary", "hygiene", "columns", "correlations", "distributions", "json"];
+  const METADATA_REVIEW_SECTIONS = ["ai", "summary", "hygiene", "columns", "correlations", "distributions"];
 
   const METADATA_SECTION_NOTE_LABELS = {
     dashboard: "Dashboard",
@@ -905,7 +906,13 @@
 
   function inferColumnStats(headers, rows) {
     return headers.map((h) => {
-      const vals = rows.map((r) => r[h]).filter((v) => v !== "" && v != null);
+      const vals = rows
+        .map((r) => r[h])
+        .filter((v) => {
+          if (v == null) return false;
+          if (typeof v === "string") return v.trim() !== "";
+          return String(v).trim() !== "";
+        });
       const n = vals.length;
       const numeric = vals
         .map((v) => {
@@ -1081,6 +1088,47 @@
     const sev = sevClass(issue && issue.sev);
     if (sev === "low") return null;
 
+    let missingCol = "";
+    const quoteMatch = title.match(/missing values in\s*[“"'`]?([^”"'`]+)[”"'`]?\s*column/i);
+    const simpleMatch = title.match(/missing values in\s*[“"'`]?([^”"'`]+)[”"'`]?/i);
+    if (quoteMatch && quoteMatch[1]) missingCol = String(quoteMatch[1]).trim();
+    else if (simpleMatch && simpleMatch[1]) missingCol = String(simpleMatch[1]).trim();
+    if (!missingCol) {
+      const detailMatch = detail.match(/missing values in\s*[“"'`]?([^”"'`]+)[”"'`]?\s*column/i);
+      if (detailMatch && detailMatch[1]) missingCol = String(detailMatch[1]).trim();
+    }
+    const col = state.headers.find((h) => String(h).toLowerCase() === missingCol.toLowerCase()) || "";
+    if (col) {
+      const nums = state.rows
+        .map((r) => Number(String((r && r[col]) ?? "").replace(/,/g, "").trim()))
+        .filter((n) => Number.isFinite(n));
+      if (nums.length) {
+        const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
+        const meanStr = Number(mean.toFixed(4)).toString();
+        return {
+          type: "imputeMeanMissing",
+          column: col,
+          value: meanStr,
+          label: `Impute missing values in "${col}" with the column mean (${meanStr}).`,
+        };
+      }
+      const freq = new Map();
+      state.rows.forEach((r) => {
+        const v = String((r && r[col]) ?? "").trim();
+        if (!v) return;
+        freq.set(v, (freq.get(v) || 0) + 1);
+      });
+      const mode = [...freq.entries()].sort((a, b) => b[1] - a[1])[0];
+      if (mode && mode[0]) {
+        return {
+          type: "imputeModeMissing",
+          column: col,
+          value: String(mode[0]),
+          label: `Fill missing values in "${col}" with the most frequent value ("${String(mode[0])}").`,
+        };
+      }
+    }
+
     if (/whitespace in column names/i.test(title)) {
       return {
         type: "trim",
@@ -1173,6 +1221,24 @@
           return o;
         });
       }
+    } else if (action.type === "imputeMeanMissing" || action.type === "imputeModeMissing") {
+      const col = String(action.column || "");
+      const val = action.value == null ? "" : String(action.value);
+      if (!col || !state.headers.includes(col)) return false;
+      const beforeMissing = rows.reduce((n, r) => {
+        const raw = r ? r[col] : "";
+        return n + (String(raw ?? "").trim() ? 0 : 1);
+      }, 0);
+      if (!beforeMissing) return false;
+      rows = rows.map((r) => {
+        const next = { ...r };
+        const raw = next[col];
+        if (!String(raw ?? "").trim()) {
+          next[col] = val;
+          changed = true;
+        }
+        return next;
+      });
     }
 
     if (!changed) return false;
@@ -1493,6 +1559,27 @@
     return sampleNumericInHistogramBin(refMin, refMax, bins.length - 1, bc, rng);
   }
 
+  function sampleFromDiscreteHistogramBinsAtQuantile(bins, refMin, refMax, u) {
+    if (!bins || !bins.length) return null;
+    if (!Number.isFinite(refMin) || !Number.isFinite(refMax) || refMax < refMin) return null;
+    const bc = bins.length;
+    const weights = bins.map((b) => Math.max(0, Number(b && b.proportion) || 0));
+    const total = weights.reduce((a, b) => a + b, 0);
+    if (!(total > 0)) return sampleNumericInHistogramBin(refMin, refMax, bc - 1, bc, () => 0.5);
+    const q = Math.max(1e-9, Math.min(1 - 1e-9, Number(u)));
+    let acc = 0;
+    for (let i = 0; i < bc; i++) {
+      const w = weights[i] / total;
+      const next = acc + w;
+      if (q <= next || i === bc - 1) {
+        const local = w > 1e-12 ? (q - acc) / w : 0.5;
+        return sampleNumericInHistogramBin(refMin, refMax, i, bc, () => Math.max(0, Math.min(1, local)));
+      }
+      acc = next;
+    }
+    return sampleNumericInHistogramBin(refMin, refMax, bc - 1, bc, () => 0.5);
+  }
+
   function gaussian12Clamp(rng, mean, std, mn, mx) {
     let g = 0;
     for (let k = 0; k < 12; k++) g += rng();
@@ -1501,6 +1588,135 @@
     if (mn != null && Number.isFinite(mn)) x = Math.max(mn, x);
     if (mx != null && Number.isFinite(mx)) x = Math.min(mx, x);
     return Number.isFinite(x) ? x : mean;
+  }
+
+  function erfApprox(x) {
+    const s = x < 0 ? -1 : 1;
+    const ax = Math.abs(x);
+    const t = 1 / (1 + 0.3275911 * ax);
+    const y =
+      1 -
+      (((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t) *
+        Math.exp(-ax * ax);
+    return s * y;
+  }
+
+  function normalCdfApprox(z) {
+    return 0.5 * (1 + erfApprox(z / Math.SQRT2));
+  }
+
+  function sampleStdNormal(rng) {
+    let u1 = 0;
+    let u2 = 0;
+    do u1 = rng();
+    while (u1 <= 1e-12);
+    u2 = rng();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  }
+
+  function choleskyLowerWithJitter(matrix) {
+    const n = matrix.length;
+    if (!n) return null;
+    const base = matrix.map((r) => r.slice());
+    for (let tries = 0; tries < 8; tries++) {
+      const jitter = tries === 0 ? 0 : Math.pow(10, -8 + tries);
+      const m = base.map((r, i) => r.map((v, j) => (i === j ? Number(v) + jitter : Number(v))));
+      const L = Array.from({ length: n }, () => Array(n).fill(0));
+      let ok = true;
+      for (let i = 0; i < n && ok; i++) {
+        for (let j = 0; j <= i; j++) {
+          let sum = 0;
+          for (let k = 0; k < j; k++) sum += L[i][k] * L[j][k];
+          if (i === j) {
+            const d = m[i][i] - sum;
+            if (!(d > 1e-12)) {
+              ok = false;
+              break;
+            }
+            L[i][j] = Math.sqrt(d);
+          } else {
+            if (!(L[j][j] > 1e-12)) {
+              ok = false;
+              break;
+            }
+            L[i][j] = (m[i][j] - sum) / L[j][j];
+          }
+        }
+      }
+      if (ok) return L;
+    }
+    return null;
+  }
+
+  function buildNumericCorrelationSamplingContext(pkg) {
+    const inc = getColumnIncludeMap();
+    const corr = pkg && pkg.numeric_correlation_pearson;
+    if (!corr || !Array.isArray(corr.matrix_columns) || !Array.isArray(corr.matrix)) return null;
+    const cols = corr.matrix_columns.filter((c) => inc[c] !== false);
+    if (cols.length < 2) return null;
+    const idxByName = new Map(corr.matrix_columns.map((c, i) => [c, i]));
+    const k = cols.length;
+    const matrix = Array.from({ length: k }, () => Array(k).fill(0));
+    for (let i = 0; i < k; i++) {
+      for (let j = 0; j < k; j++) {
+        if (i === j) {
+          matrix[i][j] = 1;
+          continue;
+        }
+        const si = idxByName.get(cols[i]);
+        const sj = idxByName.get(cols[j]);
+        const raw =
+          si != null && sj != null && corr.matrix[si] && corr.matrix[si][sj] != null ? Number(corr.matrix[si][sj]) : 0;
+        const clamped = Number.isFinite(raw) ? Math.max(-0.999, Math.min(0.999, raw)) : 0;
+        matrix[i][j] = clamped;
+      }
+    }
+    const L = choleskyLowerWithJitter(matrix);
+    if (!L) return null;
+    return { cols, L };
+  }
+
+  function sampleCorrelatedNormalVector(ctx, rng) {
+    if (!ctx || !Array.isArray(ctx.cols) || !ctx.cols.length || !Array.isArray(ctx.L)) return null;
+    const k = ctx.cols.length;
+    const z = Array.from({ length: k }, () => sampleStdNormal(rng));
+    const y = Array(k).fill(0);
+    for (let i = 0; i < k; i++) {
+      let s = 0;
+      for (let j = 0; j <= i; j++) s += ctx.L[i][j] * z[j];
+      y[i] = s;
+    }
+    return y;
+  }
+
+  function sampleNumericFromColumnMetaAtQuantile(meta, st, rng, qIn) {
+    const q = Math.max(1e-9, Math.min(1 - 1e-9, Number(qIn)));
+    const ref = meta.numeric_summary;
+    const t = meta.synthetic_numeric_targets;
+    const inferred = meta.marginal_numeric_histogram_inferred;
+    const mnUser = parseOptionalNumber(t && t.range ? t.range.min : null);
+    const mxUser = parseOptionalNumber(t && t.range ? t.range.max : null);
+    const mn = mnUser ?? (ref && ref.min);
+    const mx = mxUser ?? (ref && ref.max);
+
+    if (ref && Number.isFinite(ref.min) && Number.isFinite(ref.max) && ref.max >= ref.min) {
+      if (t && t.custom_discretized_histogram && t.custom_discretized_histogram.bins) {
+        const x = sampleFromDiscreteHistogramBinsAtQuantile(t.custom_discretized_histogram.bins, ref.min, ref.max, q);
+        if (x != null && Number.isFinite(x)) return x;
+      }
+      if (inferred && inferred.bins && inferred.bins.length) {
+        const x = sampleFromDiscreteHistogramBinsAtQuantile(inferred.bins, ref.min, ref.max, q);
+        if (x != null && Number.isFinite(x)) return x;
+      }
+    }
+    if (st && st.numericSample && st.numericSample.length >= 2) {
+      const sorted = [...st.numericSample].sort((a, b) => a - b);
+      let x = quantileLinearSorted(sorted, q);
+      if (mn != null && Number.isFinite(mn)) x = Math.max(mn, x);
+      if (mx != null && Number.isFinite(mx)) x = Math.min(mx, x);
+      if (Number.isFinite(x)) return x;
+    }
+    return sampleNumericFromColumnMeta(meta, st, rng);
   }
 
   function buildSyntheticNumericTargetsFromEdits(ed, observedSummary) {
@@ -2425,9 +2641,17 @@
       `${goalText || ""}\0${state.fileName}\0${nRows}\0${pkg.generated_at_utc || ""}\0${METADATA_SCHEMA_VERSION}`
     );
     const rng = mulberry32(seed);
+    const corrCtx = buildNumericCorrelationSamplingContext(pkg);
     const out = [];
     for (let r = 0; r < nRows; r++) {
       const row = {};
+      const corrZ = corrCtx ? sampleCorrelatedNormalVector(corrCtx, rng) : null;
+      const corrQByCol = new Map();
+      if (corrCtx && corrZ && corrZ.length === corrCtx.cols.length) {
+        corrCtx.cols.forEach((col, i) => {
+          corrQByCol.set(col, normalCdfApprox(corrZ[i]));
+        });
+      }
       for (const h of state.headers) {
         if (inc[h] === false) {
           row[h] = "";
@@ -2445,7 +2669,11 @@
           continue;
         }
         if (meta.effective_synthesis_dtype === "numeric") {
-          const x = sampleNumericFromColumnMeta(meta, st, rng);
+          const q = corrQByCol.get(h);
+          const x =
+            q != null && Number.isFinite(q)
+              ? sampleNumericFromColumnMetaAtQuantile(meta, st, rng, q)
+              : sampleNumericFromColumnMeta(meta, st, rng);
           row[h] = formatSynthCellValue(x);
         } else {
           row[h] = sampleTextFromColumnMeta(meta, rng);
@@ -2490,7 +2718,7 @@
     if (els.syntheticRowCount) els.syntheticRowCount.value = String(state.syntheticRowCount || 5000);
     if (els.syntheticOriginalLead) {
       const bytes = (state.originalCsvText || "").length;
-      els.syntheticOriginalLead.innerHTML = `The <strong>original uploaded CSV</strong> is stored in this session (~${bytes.toLocaleString()} characters) for comparison. Generation uses your <strong>metadata package</strong> (full-column marginals by default, plus any overrides you set). Correlation structure between numerics is not fully simulated yet.`;
+      els.syntheticOriginalLead.innerHTML = `The <strong>original uploaded CSV</strong> is stored in this session (~${bytes.toLocaleString()} characters) for comparison. Generation uses your <strong>metadata package</strong> (full-column marginals by default, plus any overrides you set), including numeric correlation targets from the metadata correlation matrix.`;
     }
     if (els.btnDownloadSynthetic) els.btnDownloadSynthetic.classList.toggle("hidden", !state.syntheticRows.length);
     if (els.syntheticGenStatus) {
@@ -3115,9 +3343,12 @@
     const sessionTitleEsc = escapeHtml(getSessionDisplayTitle());
     return `<div class="session-report-doc session-report-doc--professional">
       <header class="session-report-hero">
-        <p class="session-report-kicker">Synthetix</p>
-        <h1 class="session-report-title">${sessionTitleEsc}</h1>
-        <p class="session-report-subtitle">Comprehensive session report</p>
+        <div class="session-report-brand-row">
+          <img class="session-report-logo" src="static/images/synthetix-mark.png" alt="Synthetix logo" />
+          <p class="session-report-kicker">Synthetix</p>
+        </div>
+        <h1 class="session-report-title">Comprehensive session report</h1>
+        <p class="session-report-subtitle"><strong>Session name:</strong> ${sessionTitleEsc}</p>
         <dl class="session-report-meta-grid">
           <div class="session-report-meta-item"><dt>Source file</dt><dd>${escapeHtml(state.fileName || "dataset.csv")}</dd></div>
           <div class="session-report-meta-item"><dt>Report generated</dt><dd>${escapeHtml(new Date().toLocaleString())}</dd></div>
@@ -3132,13 +3363,13 @@
         <p class="panel-lead session-report-muted">Rationale typed into each accordion while editing metadata.</p>
         ${buildMetadataSectionNotesForReport()}
       </section>
-      <section class="session-report-block">
-        <h2 class="session-report-h2">4–7. Metadata change summary</h2>
-        <p class="panel-lead session-report-muted">Diffs, accepted coach items, change-summary reviewer notes per section, and full JSON export.</p>
-        ${metaChanges}
-      </section>
       ${syntheticBlock}
       ${reviewAiBlock}
+      <section class="session-report-block">
+        <h2 class="session-report-h2">Review metadata changes</h2>
+        <p class="panel-lead session-report-muted">Diffs, accepted coach items, and change-summary reviewer notes per section.</p>
+        ${metaChanges}
+      </section>
     </div>`;
   }
 
@@ -3828,6 +4059,21 @@
     });
   }
 
+  function updateMetadataSectionModifiedHighlights() {
+    if (!els.viewMetadata) return;
+    const hasNoteText = (id) => !!String((state.metadataSectionNotes && state.metadataSectionNotes[id]) || "").trim();
+    METADATA_NOTE_SECTIONS.forEach((id) => {
+      const panel = $("meta-section-" + (id === "ai" ? "ai-metadata" : id));
+      if (!panel) return;
+      let isModified = changeReviewSectionHasChanges(id);
+      if (id === "dashboard" || id === "summary") {
+        // These sections are primarily read-only views; only tint when edited directly via their own notes.
+        isModified = hasNoteText(id);
+      }
+      panel.classList.toggle("meta-section-panel--modified", isModified);
+    });
+  }
+
   function changeReviewSectionHasChanges(sectionId) {
     const incExc = hasColumnIncludeExclusion();
     const colEd = hasColumnMetadataEditsKeys();
@@ -3960,6 +4206,26 @@
     return items;
   }
 
+  function buildColumnDiffPlainEnglish(item, columnName) {
+    if (!item || typeof item !== "object") return "";
+    const field = String(item.field || "");
+    const to = String(item.to || "");
+    const col = String(columnName || "this column");
+    if (field === "Custom category mix (JSON)") {
+      return `The category proportions for "${col}" were custom-set instead of using the observed mix.`;
+    }
+    if (field === "Numeric histogram (custom bin targets)") {
+      return `The numeric distribution shape for "${col}" was manually rebalanced from the default observed histogram.`;
+    }
+    if (field === "Schema type intent") {
+      return `The data type for "${col}" was explicitly set to ${to}.`;
+    }
+    if (field === "Schema inclusion") {
+      return `"${col}" was removed from synthesis metadata.`;
+    }
+    return "";
+  }
+
   function briefColumnChangeSummary(colName, colStat, ed, includedInSchema) {
     const parts = [];
     if (!includedInSchema) parts.push("Excluded from schema");
@@ -4029,8 +4295,11 @@
       if (!items.length) continue;
       const lis = items
         .map(
-          (it) =>
-            `<li class="meta-diff-row"><span class="meta-diff-field">${escapeHtml(it.field)}</span> <span class="meta-diff-pair"><span class="meta-diff-from">${escapeHtml(it.from)}</span><span class="meta-diff-arrow" aria-hidden="true">→</span><span class="meta-diff-to">${escapeHtml(it.to)}</span></span></li>`
+          (it) => {
+            const english = buildColumnDiffPlainEnglish(it, col);
+            const englishHtml = english ? `<p class="meta-diff-english">${escapeHtml(english)}</p>` : "";
+            return `<li class="meta-diff-row"><span class="meta-diff-field">${escapeHtml(it.field)}</span> <span class="meta-diff-pair"><span class="meta-diff-from">${escapeHtml(it.from)}</span><span class="meta-diff-arrow" aria-hidden="true">→</span><span class="meta-diff-to">${escapeHtml(it.to)}</span></span>${englishHtml}</li>`;
+          }
         )
         .join("");
       const revertRow = printMode
@@ -4946,6 +5215,7 @@
       if (els.btnRevertDistributions) els.btnRevertDistributions.classList.add("hidden");
       const distDet = $("meta-section-distributions");
       if (distDet) distDet.classList.remove("meta-section-panel--dist-edited");
+      updateMetadataSectionModifiedHighlights();
       if (els.metadataDistLegend) {
         els.metadataDistLegend.innerHTML = "";
         els.metadataDistLegend.classList.add("hidden");
@@ -5048,6 +5318,7 @@
     bindMetadataAiAcceptOnce();
     bindRevertDistributionsOnce();
     updateDistributionsRevertButtonVisibility();
+    updateMetadataSectionModifiedHighlights();
     syncMetadataSectionNotesInputs();
     updateMetadataSectionNotesVisibility();
     refreshMetadataAiSuggestionsFromState();
@@ -5136,7 +5407,7 @@
     const inner = [];
     let anySection = false;
 
-    for (const sid of METADATA_NOTE_SECTIONS) {
+    for (const sid of METADATA_REVIEW_SECTIONS) {
       if (!changeReviewSectionHasChanges(sid)) continue;
       anySection = true;
       const title = METADATA_SECTION_NOTE_LABELS[sid] || sid;
@@ -5145,18 +5416,14 @@
         body = buildColumnsChangeReviewBody(colStats, opt);
       } else if (sid === "correlations") {
         body = buildCorrelationsChangeReviewBody(colStats, opt);
-      } else if (sid === "dashboard") {
-        body = `<p class="panel-lead meta-changes-lead-tight">Synthetic numeric, categorical, or correlation targets were customized from profiling defaults. Column- and pair-level detail appears under <strong>Columns</strong> and <strong>Correlations</strong>.</p>`;
       } else if (sid === "ai") {
         body = buildAiCoachChangeReviewBody(opt);
       } else if (sid === "hygiene") {
         body = buildInspectionHygieneChangeReviewBody(opt);
       } else if (sid === "summary") {
-        body = `<p class="panel-lead meta-changes-lead-tight">Summary figures on the metadata screen reflect your current include/exclude choices and column metadata edits.</p>`;
+        body = "";
       } else if (sid === "distributions") {
-        body = `<p class="panel-lead meta-changes-lead-tight">You changed <strong>histogram bins</strong>, <strong>numeric distribution shape</strong>, and/or <strong>category strategy or mix</strong> in the Distributions accordion. Use <strong>Revert changes</strong> (top right of that section) to clear those targets back to profiling defaults. Per-column detail also appears under <strong>Columns</strong>.</p>`;
-      } else if (sid === "json") {
-        body = `<p class="panel-lead meta-changes-lead-tight">The live JSON export on the metadata screen reflects all overrides listed in the sections above.</p>`;
+        body = `<p class="panel-lead meta-changes-lead-tight">Distribution tuning changed how generated values are shaped (numeric spread and/or category mix). Column-level details are listed under <strong>Columns</strong>.</p>`;
       }
       inner.push(changeReviewSectionHtml(sid, title, body, opt));
     }
@@ -5165,19 +5432,15 @@
       inner.push(
         `<div class="panel meta-changes-block"><p class="panel-lead meta-changes-lead-tight">No manual overrides are recorded yet. When you exclude columns, edit field metadata, adjust synthetic targets, change correlation targets, accept AI Metadata Agent recommendations, or accept suggested fixes from data inspection hygiene findings, only the relevant sections will appear here.</p></div>`
       );
-    } else if (printMode) {
-      const rawJson = JSON.stringify(pkg, null, 2);
-      const cap = 120000;
-      const jsonBody =
-        rawJson.length > cap
-          ? `${escapeHtml(rawJson.slice(0, cap))}\n\n… [JSON truncated for report length; full export available in the app.]`
-          : escapeHtml(rawJson);
+    } else if (!printMode) {
       inner.push(
-        `<section class="panel meta-changes-block"><h3 class="panel-title">Full synthesis metadata JSON (after your changes)</h3><pre class="metadata-json session-report-json-pre" aria-label="Metadata JSON after edits">${jsonBody}</pre></section>`
-      );
-    } else {
-      inner.push(
-        `<details class="meta-section-panel meta-changes-json-details no-print"><summary class="meta-section-summary">Full synthesis metadata JSON (after your changes)</summary><div class="meta-section-body"><pre class="metadata-json meta-changes-json-pre" id="metadata-changes-json-pre" aria-label="Metadata JSON after edits"></pre></div></details>`
+        `<section class="panel meta-changes-block meta-changes-json-toggle-block no-print">
+          <div class="meta-changes-json-toggle-head">
+            <h3 class="panel-title">JSON changes</h3>
+            <button type="button" class="btn btn-secondary btn-sm" data-toggle-json-changes="1" aria-expanded="false">Show JSON changes</button>
+          </div>
+          <pre class="metadata-json meta-changes-json-pre hidden" id="metadata-changes-json-pre" aria-label="Metadata JSON after edits"></pre>
+        </section>`
       );
     }
 
@@ -5185,7 +5448,10 @@
     const printBanner = skipTopBanner
       ? ""
       : `<div class="meta-changes-print-banner report-print-banner">
-      <p class="report-print-kicker">Synthetix</p>
+      <div class="report-print-brand-row">
+        <img class="report-print-logo" src="static/images/synthetix-mark.png" alt="Synthetix logo" />
+        <p class="report-print-kicker">Synthetix</p>
+      </div>
       <h1 class="meta-changes-print-title report-print-session-title">${sessionTitle}</h1>
       <p class="report-print-doc-type">Metadata change report</p>
       <p class="meta-changes-print-meta report-print-meta-line">${escapeHtml(state.fileName || "dataset.csv")} · ${escapeHtml(new Date().toLocaleString())}</p>
@@ -5762,7 +6028,7 @@
     renderInspectStatic(colStats);
 
     els.agentSummary.textContent =
-      "OpenAI is reviewing column profiles, deterministic checks, and a small row sample through the local API. This usually takes a few seconds.";
+      "Your agent is reviewing column profiles, deterministic checks, and a small row sample. This usually takes a few seconds.";
     els.issueList.innerHTML = `<li class="issue-item"><span class="issue-severity low">…</span><div class="issue-body"><strong>In progress</strong><span>Running model assessment.</span></div></li>`;
     if (els.btnRetryAi) els.btnRetryAi.classList.add("hidden");
     if (els.agentPrivacyNote) els.agentPrivacyNote.classList.add("hidden");
@@ -6097,9 +6363,20 @@
         if (!suggestedFix) return;
         const changed = action ? runActionableIssueFix(action) : false;
         if (changed) {
-          state.inspectionHygieneAccepted = [];
+          if (!state.inspectionHygieneAccepted) state.inspectionHygieneAccepted = [];
+          if (!state.inspectionHygieneAccepted.some((x) => x.id === id)) {
+            state.inspectionHygieneAccepted.push({
+              id,
+              title: String(issue.title || "").slice(0, 300),
+              detail: String(issue.detail || "").slice(0, 1200),
+              suggestedFix: suggestedFix.slice(0, 900),
+              accepted_at_utc: new Date().toISOString(),
+            });
+          }
           saveSession();
-          renderInspect();
+          renderIssueList();
+          if (state.step === 2 && state.metadataPane === "changesReview") renderMetadataChangesReview();
+          updateMetadataSectionNotesVisibility();
           toast("Fix applied to the dataset.");
           return;
         }
@@ -6207,6 +6484,16 @@
 
     if (els.viewMetadataReview) {
       els.viewMetadataReview.addEventListener("click", (e) => {
+        const jsonBtn = e.target.closest("[data-toggle-json-changes]");
+        if (jsonBtn) {
+          const pre = $("metadata-changes-json-pre");
+          if (!pre) return;
+          const isHidden = pre.classList.contains("hidden");
+          pre.classList.toggle("hidden", !isHidden);
+          jsonBtn.setAttribute("aria-expanded", isHidden ? "true" : "false");
+          jsonBtn.textContent = isHidden ? "Hide JSON changes" : "Show JSON changes";
+          return;
+        }
         const btn = e.target.closest(
           "[data-revert],[data-revert-column],[data-revert-corr-a],[data-revert-ai-id],[data-revert-hygiene-id]"
         );
@@ -6259,7 +6546,7 @@
           const ta = e.target.closest("[data-change-review-note]");
           if (!ta) return;
           const key = ta.getAttribute("data-change-review-note");
-          if (!key || !METADATA_NOTE_SECTIONS.includes(key)) return;
+          if (!key || !METADATA_REVIEW_SECTIONS.includes(key)) return;
           if (!state.metadataChangeReviewNotes) state.metadataChangeReviewNotes = {};
           state.metadataChangeReviewNotes[key] = ta.value;
           saveSession();

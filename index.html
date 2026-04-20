@@ -6,6 +6,7 @@
     <!-- __AUTO__ = API on same host as this page when it is FastAPI. If you use Live Preview / http.server, set an explicit API URL, e.g. http://127.0.0.1:8765 -->
     <meta name="api-base" content="__AUTO__" />
     <title>Synthetix</title>
+    <link rel="icon" type="image/png" href="static/images/synthetix-mark.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -181,14 +182,14 @@
               </p>
 
               <div class="agent-banner" id="agent-banner">
-                <div class="agent-avatar" aria-hidden="true">
-                  <img class="agent-avatar-img" src="static/images/data-hygiene-agent-v2.png" alt="" decoding="async" />
+                <div class="agent-avatar data-quality-agent-avatar" aria-hidden="true">
+                  <img class="agent-avatar-img data-quality-agent-avatar-img" src="static/images/data-hygiene-agent-v2.png" alt="" decoding="async" />
                 </div>
                 <div class="agent-banner-main">
                   <h3>Data quality agent</h3>
                   <p id="agent-summary">
                     After upload, the inspection step sends column statistics, deterministic checks, and a small row sample
-                    to OpenAI through this app’s backend for a written assessment.
+                    to your data quality agent for a written assessment.
                   </p>
                   <p id="agent-privacy-note" class="agent-privacy-note hidden">
                     A limited row sample is transmitted to the model via your machine’s API process only — not with the key
@@ -287,10 +288,9 @@
           </summary>
           <div class="meta-section-body">
             <p class="panel-lead">
-              Your CSV is summarized into <strong>descriptive metadata</strong> (statistics and structure — not a copy of
-              every cell). The export includes <strong>full-table marginals</strong> for synthesis (numeric histograms and
-              category proportions from every row in the working table). Use <strong>Edit metadata</strong> on any column
-              to adjust labels, how the field should be treated, or overrides for the synthesis step.
+              We turn your CSV into a clear metadata profile that describes the data shape and patterns (without copying
+              every row). That profile includes full-dataset distributions to guide synthetic generation. Use
+              <strong>Edit metadata</strong> on any column to refine labels, data type intent, and generation settings.
             </p>
             <ol class="metadata-flow">
               <li><strong>Parse</strong> — Read headers and cell values from your session.</li>
@@ -315,7 +315,7 @@
           <summary class="meta-section-summary">
             <span class="meta-section-summary-main metadata-ai-summary-row">
               <span class="metadata-ai-summary-icon" aria-hidden="true">
-                <img class="metadata-ai-agent-logo metadata-ai-agent-logo--summary" src="static/images/metadata-agent-v3.png" alt="" decoding="async" />
+                <img class="metadata-ai-agent-logo metadata-ai-agent-logo--summary" src="static/images/metadata-agent-v4.png" alt="" decoding="async" />
               </span>
               <span class="meta-section-title" id="ai-metadata-assistant-heading">AI Metadata Agent</span>
             </span>
@@ -324,7 +324,7 @@
             <div class="metadata-ai-suggestions" id="metadata-ai-suggestions-block">
               <div class="metadata-agent-intro">
                 <div class="metadata-agent-brand" aria-hidden="true">
-                  <img class="metadata-ai-agent-logo metadata-ai-agent-logo--hero" src="static/images/metadata-agent-v3.png" alt="" decoding="async" />
+                  <img class="metadata-ai-agent-logo metadata-ai-agent-logo--hero" src="static/images/metadata-agent-v4.png" alt="" decoding="async" />
                 </div>
                 <div class="metadata-agent-copy">
                   <p class="metadata-agent-kicker">Your metadata coach</p>
@@ -491,12 +491,8 @@
 
       <section id="view-metadata-review" class="hidden" aria-labelledby="metadata-review-heading">
         <div class="panel">
-          <h2 class="panel-title" id="metadata-review-heading">Metadata change summary</h2>
-          <p class="panel-lead">
-            Everything listed here is how your session <strong>differs from plain profiling</strong> of the uploaded
-            file: schema exclusions, column edits, synthetic numeric or category targets, and correlation overrides. The
-            JSON at the bottom is the exact package a generator would see after these changes.
-          </p>
+          <h2 class="panel-title" id="metadata-review-heading">Review metadata changes</h2>
+          <p class="panel-lead">Summarize rationale behind changes.</p>
         </div>
         <div id="metadata-changes-root" class="metadata-changes-root"></div>
         <div class="metadata-review-actions no-print">
@@ -520,7 +516,7 @@
           <div class="synthetic-gen-panel">
             <div class="modal-field">
               <label for="synthetic-goal">Goal for the synthetic dataset</label>
-              <textarea id="synthetic-goal" class="modal-textarea" rows="4" placeholder="e.g. Stress-test billing codes under a balanced severity mix for training, without real PHI."></textarea>
+              <textarea id="synthetic-goal" class="modal-textarea" rows="4" placeholder="e.g. Extrapolate sample data to a larger population."></textarea>
             </div>
             <div class="modal-field synthetic-row-count-field">
               <label for="synthetic-row-count">Number of rows to generate</label>
@@ -590,32 +586,30 @@
             <summary class="review-section-summary">
               <span class="review-section-chevron" aria-hidden="true"></span>
               <span class="review-section-heading review-section-heading--inline-icon">
-                <span class="review-assistant-sparkle" aria-hidden="true">
-                  <svg class="review-sparkle-svg" viewBox="0 0 24 24" width="20" height="20" focusable="false">
-                    <path
-                      fill="currentColor"
-                      d="M12 1.5l1.2 4.5 4.5 1.2-4.5 1.2L12 13l-1.2-4.6-4.5-1.2 4.5-1.2L12 1.5zm0 11l.9 3.4 3.4.9-3.4.9L12 21l-.9-3.3-3.4-.9 3.4-.9L12 12.5z"
-                    />
-                  </svg>
-                </span>
                 <span class="review-section-heading-text">
-                  <span class="review-section-title">Synthetic Data Review Assistant</span>
-                  <span class="review-section-meta">Optional OpenAI — summaries &amp; small samples only</span>
+                  <span class="review-assistant-title-row">
+                    <span class="review-section-title">Synthetic Data Review Assistant</span>
+                    <span class="review-assistant-sparkle" aria-hidden="true">
+                      <svg class="review-sparkle-svg" viewBox="0 0 24 24" width="20" height="20" focusable="false">
+                        <path
+                          fill="currentColor"
+                          d="M12 1.5l1.2 4.5 4.5 1.2-4.5 1.2L12 13l-1.2-4.6-4.5-1.2 4.5-1.2L12 1.5zm0 11l.9 3.4 3.4.9-3.4.9L12 21l-.9-3.3-3.4-.9 3.4-.9L12 12.5z"
+                        />
+                      </svg>
+                    </span>
+                  </span>
+                  <span class="review-section-meta">Optional: Summaries &amp; small samples only</span>
                 </span>
               </span>
             </summary>
             <div class="review-section-body">
               <div class="agent-banner review-assistant-banner">
                 <div class="agent-avatar agent-avatar--sparkle" aria-hidden="true">
-                  <svg class="review-sparkle-svg review-sparkle-svg--lg" viewBox="0 0 24 24" width="26" height="26" focusable="false">
-                    <path
-                      fill="currentColor"
-                      d="M12 1.5l1.2 4.5 4.5 1.2-4.5 1.2L12 13l-1.2-4.6-4.5-1.2 4.5-1.2L12 1.5zm0 11l.9 3.4 3.4.9-3.4.9L12 21l-.9-3.3-3.4-.9 3.4-.9L12 12.5z"
-                    />
-                  </svg>
+                  <img class="agent-avatar-img review-assistant-avatar-img" src="static/images/review-assistant-agent-v3.png" alt="" decoding="async" />
                 </div>
                 <div class="agent-banner-main">
                   <h3>Synthetic Data Review Assistant</h3>
+                  <p class="review-assistant-submeta">Optional: Summaries &amp; small samples only</p>
                   <p class="panel-lead review-ai-intro">
                     Sends your fidelity summary, compact numeric and correlation deltas, category headlines, the synthetic goal, and small row samples — not full tables. Avoid regulated identifiers in samples if your environment is not approved for model providers.
                   </p>
