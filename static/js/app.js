@@ -112,6 +112,7 @@
   /** Which top-level screen is visible: home | create | library | education */
   let currentAppScreen = "home";
   let lastSessionSaveToastAt = 0;
+  let synthetixHelpHistory = [];
 
   function archiveStorageKey(archiveId) {
     return ARCHIVE_STORAGE_PREFIX + archiveId;
@@ -348,6 +349,12 @@
     els.btnHomeContinue = $("btn-home-continue");
     els.synthetixWorkflowLoader = $("synthetix-workflow-loader");
     els.synthetixWorkflowLoaderImg = $("synthetix-workflow-loader-img");
+    els.synthetixHelpChat = $("synthetix-help-chat");
+    els.synthetixHelpChatMessages = $("synthetix-help-chat-messages");
+    els.synthetixHelpChatInput = $("synthetix-help-chat-input");
+    els.synthetixHelpChatSend = $("synthetix-help-chat-send");
+    els.synthetixHelpChatForm = $("synthetix-help-chat-form");
+    els.synthetixHelpChatClose = $("synthetix-help-chat-close");
   }
 
   /** Fixed corner mark: double 360° + scale “learning” pulse when workflow step changes on Create. */
@@ -363,6 +370,92 @@
       img.classList.remove("synthetix-workflow-loader-img--playing");
     };
     img.addEventListener("animationend", done, { once: true });
+  }
+
+  /** Corner launcher: one full rotation on each click (separate from Create-step “learning” pulse on the image). */
+  function playSynthetixLoaderClickSwirl() {
+    if (!els.synthetixWorkflowLoader) return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const ring = els.synthetixWorkflowLoader.querySelector(".synthetix-workflow-loader-ring");
+    if (!ring) return;
+    ring.classList.remove("synthetix-workflow-loader-ring--swirl-once");
+    void ring.offsetWidth;
+    ring.classList.add("synthetix-workflow-loader-ring--swirl-once");
+    const done = () => {
+      ring.removeEventListener("animationend", done);
+      ring.classList.remove("synthetix-workflow-loader-ring--swirl-once");
+    };
+    ring.addEventListener("animationend", done, { once: true });
+  }
+
+  function appendSynthetixHelpMessage(role, text) {
+    if (!els.synthetixHelpChatMessages) return;
+    const p = document.createElement("p");
+    p.className = `synthetix-help-msg synthetix-help-msg--${role === "user" ? "user" : "assistant"}`;
+    p.textContent = String(text || "");
+    els.synthetixHelpChatMessages.appendChild(p);
+    els.synthetixHelpChatMessages.scrollTop = els.synthetixHelpChatMessages.scrollHeight;
+  }
+
+  function ensureSynthetixHelpIntro() {
+    if (!els.synthetixHelpChatMessages) return;
+    if (els.synthetixHelpChatMessages.children.length) return;
+    appendSynthetixHelpMessage(
+      "assistant",
+      "Hi — I am Synthetix AI. Ask me about data inspection, metadata, synthetic generation, correlations, or review metrics."
+    );
+  }
+
+  function toggleSynthetixHelpChat(forceOpen) {
+    if (!els.synthetixHelpChat) return;
+    const open = typeof forceOpen === "boolean" ? forceOpen : els.synthetixHelpChat.classList.contains("hidden");
+    els.synthetixHelpChat.classList.toggle("hidden", !open);
+    if (open) {
+      ensureSynthetixHelpIntro();
+      if (els.synthetixHelpChatInput) els.synthetixHelpChatInput.focus();
+    }
+  }
+
+  async function sendSynthetixHelpMessage() {
+    if (!els.synthetixHelpChatInput || !els.synthetixHelpChatSend) return;
+    const message = String(els.synthetixHelpChatInput.value || "").trim();
+    if (!message) return;
+    els.synthetixHelpChatInput.value = "";
+    appendSynthetixHelpMessage("user", message);
+    synthetixHelpHistory.push({ role: "user", content: message });
+    synthetixHelpHistory = synthetixHelpHistory.slice(-12);
+    els.synthetixHelpChatSend.disabled = true;
+    appendSynthetixHelpMessage("assistant", "Thinking...");
+    try {
+      const res = await fetch(`${apiBase()}/api/synthetix-help-chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          history: synthetixHelpHistory,
+        }),
+      });
+      const raw = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof raw.detail === "string" ? raw.detail : res.statusText);
+      const answer = String(raw.answer || "").trim() || "I could not generate a reply right now.";
+      // Replace last temporary "Thinking..." bubble.
+      if (els.synthetixHelpChatMessages && els.synthetixHelpChatMessages.lastElementChild) {
+        const n = els.synthetixHelpChatMessages.lastElementChild;
+        if (n && n.textContent === "Thinking...") n.remove();
+      }
+      appendSynthetixHelpMessage("assistant", answer);
+      synthetixHelpHistory.push({ role: "assistant", content: answer });
+      synthetixHelpHistory = synthetixHelpHistory.slice(-12);
+    } catch (err) {
+      if (els.synthetixHelpChatMessages && els.synthetixHelpChatMessages.lastElementChild) {
+        const n = els.synthetixHelpChatMessages.lastElementChild;
+        if (n && n.textContent === "Thinking...") n.remove();
+      }
+      appendSynthetixHelpMessage("assistant", "I could not reach help right now. Please try again.");
+      toast(err && err.message ? err.message : "Help chat request failed.");
+    } finally {
+      els.synthetixHelpChatSend.disabled = false;
+    }
   }
 
   function toast(msg) {
@@ -6313,6 +6406,23 @@
   }
 
   function bindEvents() {
+    if (els.synthetixWorkflowLoader) {
+      els.synthetixWorkflowLoader.addEventListener("click", (e) => {
+        e.stopPropagation();
+        playSynthetixLoaderClickSwirl();
+        toggleSynthetixHelpChat();
+      });
+    }
+    if (els.synthetixHelpChatClose) {
+      els.synthetixHelpChatClose.addEventListener("click", () => toggleSynthetixHelpChat(false));
+    }
+    if (els.synthetixHelpChatForm) {
+      els.synthetixHelpChatForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        void sendSynthetixHelpMessage();
+      });
+    }
+
     els.dropzone.addEventListener("click", () => els.fileInput.click());
     els.dropzone.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") {

@@ -251,6 +251,20 @@ class ReviewSyntheticCheckResponse(BaseModel):
     points: list[ReviewSyntheticPointOut]
 
 
+class SynthetixHelpTurnIn(BaseModel):
+    role: str = Field(default="user", pattern="^(user|assistant)$")
+    content: str = Field(default="", max_length=4000)
+
+
+class SynthetixHelpChatRequest(BaseModel):
+    message: str = Field(default="", max_length=4000)
+    history: list[SynthetixHelpTurnIn] = Field(default_factory=list, max_length=16)
+
+
+class SynthetixHelpChatResponse(BaseModel):
+    answer: str
+
+
 SYNTH_AI_MAX_ROWS = int(os.getenv("SYNTH_AI_MAX_ROWS", "120"))
 SYNTH_AI_MAX_OUTPUT_TOKENS = int(os.getenv("SYNTH_AI_MAX_OUTPUT_TOKENS", "32000"))
 
@@ -693,6 +707,68 @@ Respond with ONLY valid JSON (no markdown fences):
         ]
 
     return ReviewSyntheticCheckResponse(summary=summary[:3500], points=points)
+
+
+@app.post("/api/synthetix-help-chat", response_model=SynthetixHelpChatResponse)
+async def synthetix_help_chat(body: SynthetixHelpChatRequest):
+    """OpenAI: lightweight in-app help chat for Synthetix workflow questions."""
+    api_key = _openai_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not set in the server environment.")
+
+    user_msg = str(body.message or "").strip()
+    if not user_msg:
+        raise HTTPException(status_code=400, detail="message is required.")
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    system = """You are Synthetix AI inside a synthetic data app.
+
+Your role:
+- Help users understand the synthetic data process in plain language.
+- Explain steps: upload, inspection/hygiene findings, metadata edits, distributions, correlations, synthetic generation, review metrics, and reports.
+- Clarify what actions do in this app (for example, accept/revert fixes, metadata overrides, correlation targets).
+- Be concise and practical. Prefer short paragraphs or bullets.
+
+Rules:
+- Do not mention APIs, keys, model names, or backend implementation details unless directly asked.
+- If asked for medical, legal, or regulatory advice, provide general info only and recommend qualified review.
+- If something is uncertain, say so clearly instead of inventing details.
+
+Respond with ONLY valid JSON:
+{"answer": string}
+"""
+
+    msgs: list[dict[str, str]] = [{"role": "system", "content": system}]
+    for t in body.history[-12:]:
+        role = "assistant" if t.role == "assistant" else "user"
+        content = str(t.content or "").strip()
+        if not content:
+            continue
+        msgs.append({"role": role, "content": content[:4000]})
+    msgs.append({"role": "user", "content": user_msg[:4000]})
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+        completion = await client.chat.completions.create(
+            model=model,
+            temperature=0.25,
+            response_format={"type": "json_object"},
+            messages=msgs,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OpenAI request failed: {e!s}") from e
+
+    content = completion.choices[0].message.content
+    if not content:
+        raise HTTPException(status_code=502, detail="Empty response from model.")
+
+    try:
+        data = _parse_json_object(content)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Model returned invalid JSON: {e}") from e
+
+    answer = str(data.get("answer", "")).strip() or "I can help with the Synthetix synthetic data workflow. Ask me anything about the process."
+    return SynthetixHelpChatResponse(answer=answer[:6000])
 
 
 @app.post("/api/synthetic-generate-ai", response_model=SyntheticAiResponse)

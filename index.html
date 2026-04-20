@@ -945,7 +945,7 @@
       </div>
     </div>
 
-    <div id="synthetix-workflow-loader" class="synthetix-workflow-loader" aria-hidden="true" title="Synthetix">
+    <div id="synthetix-workflow-loader" class="synthetix-workflow-loader" title="Synthetix help chat">
       <div class="synthetix-workflow-loader-ring">
         <img
           id="synthetix-workflow-loader-img"
@@ -958,6 +958,24 @@
         />
       </div>
     </div>
+
+    <section id="synthetix-help-chat" class="synthetix-help-chat hidden" aria-label="Synthetix help chat">
+      <div class="synthetix-help-chat-head">
+        <strong>Synthetix AI</strong>
+        <button type="button" class="btn btn-ghost btn-sm" id="synthetix-help-chat-close">Close</button>
+      </div>
+      <div id="synthetix-help-chat-messages" class="synthetix-help-chat-messages" aria-live="polite"></div>
+      <form id="synthetix-help-chat-form" class="synthetix-help-chat-form">
+        <input
+          type="text"
+          id="synthetix-help-chat-input"
+          class="modal-input synthetix-help-chat-input"
+          placeholder="Ask about synthetic data generation..."
+          autocomplete="off"
+        />
+        <button type="submit" class="btn btn-primary btn-sm" id="synthetix-help-chat-send">Send</button>
+      </form>
+    </section>
 
     <script src="static/js/app.js"></script>
   </body>

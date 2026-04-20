@@ -4255,10 +4255,11 @@ details.review-section > .review-section-summary::marker {
 /* —— Fixed workflow “AI learning” mark (Create step transitions) —— */
 .synthetix-workflow-loader {
   position: fixed;
-  left: 1.15rem;
+  right: 1.15rem;
   bottom: 1.15rem;
-  z-index: 90;
-  pointer-events: none;
+  z-index: 102;
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .synthetix-workflow-loader-ring {
@@ -4282,6 +4283,91 @@ details.review-section > .review-section-summary::marker {
   object-fit: contain;
   display: block;
   transform-origin: 50% 50%;
+}
+
+.synthetix-workflow-loader-ring--swirl-once {
+  animation: synthetix-loader-click-swirl 0.64s cubic-bezier(0.45, 0, 0.2, 1) forwards;
+  transform-origin: 50% 50%;
+}
+
+@keyframes synthetix-loader-click-swirl {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.synthetix-help-chat {
+  position: fixed;
+  right: 1.15rem;
+  bottom: 5rem;
+  width: min(24rem, calc(100vw - 1.5rem));
+  max-height: min(62vh, 34rem);
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 101;
+}
+
+.synthetix-help-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.synthetix-help-chat-messages {
+  padding: 0.7rem 0.75rem;
+  overflow: auto;
+  min-height: 11rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.synthetix-help-msg {
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.synthetix-help-msg--user {
+  align-self: flex-end;
+  max-width: 92%;
+  background: rgba(14, 165, 233, 0.16);
+  border: 1px solid rgba(14, 165, 233, 0.3);
+}
+
+.synthetix-help-msg--assistant {
+  align-self: flex-start;
+  max-width: 95%;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.synthetix-help-chat-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.synthetix-help-chat-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .synthetix-workflow-loader-img--playing {
@@ -4313,10 +4399,18 @@ details.review-section > .review-section-summary::marker {
   .synthetix-workflow-loader-img--playing {
     animation: none;
   }
+
+  .synthetix-workflow-loader-ring--swirl-once {
+    animation: none;
+  }
 }
 
 @media print {
   .synthetix-workflow-loader {
+    display: none !important;
+  }
+
+  .synthetix-help-chat {
     display: none !important;
   }
 }
