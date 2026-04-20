@@ -474,7 +474,7 @@ def _normalize_metadata_suggestions(raw: list) -> list[MetadataSuggestionItemOut
     out: list[MetadataSuggestionItemOut] = []
     if not isinstance(raw, list):
         return out
-    for item in raw[:4]:
+    for item in raw[:3]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title", "")).strip() or "Suggestion"
@@ -551,7 +551,7 @@ Respond with ONLY valid JSON (no markdown, no code fences):
 
 **summary** — One or two short sentences in plain, confident language: what stands out about their metadata and how ready it looks for synthetic generation. No jargon about systems or infrastructure.
 
-**suggestions** — **Exactly 1 to 4** objects (never an empty array, never more than 4). Always return **at least one** tip, even if it is minimal or low impact (e.g. confirm types, add a short synthesis note, sanity-check an identifier column, or acknowledge the profile looks good with one small refinement). Prefer higher-impact items first when they exist.
+**suggestions** — Between **0 and 3** objects. Return suggestions only when there is a clear metadata improvement to make. If metadata already looks appropriate, return an empty array.
 
 Each suggestion object:
 {"title": string, "detail": string, "importance": "high"|"medium"|"low", "related_columns": string[], "suggested_action": string}
@@ -562,7 +562,13 @@ Each suggestion object:
 - **related_columns**: Up to 3 names; every name MUST appear in the provided headers/column_stats. Use [] if none.
 - **suggested_action**: One short imperative line the user can follow in the metadata UI (optional; use "" if redundant).
 
-Rules: Never invent column names. Avoid repeating the same idea twice. Do not mention APIs, keys, models, servers, or "OpenAI". Write as the in-product agent."""
+Rules:
+- Never invent column names.
+- Avoid repeating the same idea twice.
+- Do **not** re-suggest generic hygiene fixes already covered in inspection (e.g., dedupe, trim whitespace, drop empty rows) unless you convert them into a specific metadata change with clear synthetic-quality impact.
+- Keep every suggestion dataset-specific by citing concrete column context and why the metadata change will improve synthetic realism.
+- Do not mention APIs, keys, models, servers, or "OpenAI".
+- Write as the in-product agent."""
 
     user = json.dumps(payload, ensure_ascii=False)
 
@@ -590,24 +596,7 @@ Rules: Never invent column names. Avoid repeating the same idea twice. Do not me
         raise HTTPException(status_code=502, detail=f"Model returned invalid JSON: {e}") from e
 
     summary = str(data.get("summary", "")).strip() or "Here is a quick read on your metadata for synthetic data."
-    suggestions = _normalize_metadata_suggestions(data.get("suggestions", []))
-    if not suggestions:
-        related: list[str] = []
-        if stats:
-            n0 = str(stats[0].name).strip()
-            if n0 and (not headers or n0 in headers):
-                related = [n0[:120]]
-        suggestions = [
-            MetadataSuggestionItemOut(
-                title="Light-touch metadata check",
-                detail="No stronger automated tips came back from this run; a quick scan of types and short field notes still tightens synthetic fidelity.",
-                importance="low",
-                related_columns=related[:1],
-                suggested_action="Open the Columns accordion and confirm each included field matches the clinical or operational meaning you want in synthetic data.",
-            )
-        ]
-
-    suggestions = suggestions[:4]
+    suggestions = _normalize_metadata_suggestions(data.get("suggestions", []))[:3]
 
     return MetadataSuggestResponse(summary=summary[:1200], suggestions=suggestions)
 

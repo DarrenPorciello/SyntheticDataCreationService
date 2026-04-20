@@ -110,6 +110,7 @@
 
   /** Which top-level screen is visible: home | create | library | education */
   let currentAppScreen = "home";
+  let lastSessionSaveToastAt = 0;
 
   function archiveStorageKey(archiveId) {
     return ARCHIVE_STORAGE_PREFIX + archiveId;
@@ -332,8 +333,12 @@
     els.screenLibrary = $("screen-library");
     els.screenEducation = $("screen-education");
     els.appHeaderWorkflow = $("app-header-workflow");
+    els.btnHeaderSettings = $("btn-header-settings");
+    els.headerSettingsMenu = $("header-settings-menu");
+    els.btnClearSessionDataGlobal = $("btn-clear-session-data-global");
     els.sessionLibraryList = $("session-library-list");
     els.sessionLibraryEmpty = $("session-library-empty");
+    els.btnLibraryClearAll = $("btn-library-clear-all");
     els.btnSaveSessionLibrary = $("btn-save-session-library");
     els.finalizeSaveStatus = $("finalize-save-status");
     els.homeDraftHint = $("home-draft-hint");
@@ -449,11 +454,14 @@
       metadataAiLastRun: (() => {
         const r = state.metadataAiLastRun;
         if (!r || typeof r !== "object" || !Array.isArray(r.items)) return null;
-        return { runId: r.runId, summary: String(r.summary || ""), items: r.items.slice(0, 4) };
+        return { runId: r.runId, summary: String(r.summary || ""), items: r.items.slice(0, 3) };
       })(),
       metadataAiAccepted: Array.isArray(state.metadataAiAccepted) ? state.metadataAiAccepted : [],
       inspectionHygieneAccepted: Array.isArray(state.inspectionHygieneAccepted) ? state.inspectionHygieneAccepted : [],
-      originalCsvText: state.originalCsvText || "",
+      originalCsvText:
+        state.rows && state.rows.length > 0 && state.headers && state.headers.length > 0
+          ? ""
+          : state.originalCsvText || "",
       syntheticGoal: state.syntheticGoal || "",
       syntheticRowCount:
         typeof state.syntheticRowCount === "number" && Number.isFinite(state.syntheticRowCount)
@@ -494,7 +502,7 @@
         ? {
             runId: o.metadataAiLastRun.runId,
             summary: String(o.metadataAiLastRun.summary || ""),
-            items: o.metadataAiLastRun.items.slice(0, 4),
+            items: o.metadataAiLastRun.items.slice(0, 3),
           }
         : null;
     state.metadataAiAccepted = Array.isArray(o.metadataAiAccepted) ? o.metadataAiAccepted : [];
@@ -555,7 +563,7 @@
           state.syntheticRows = [];
           state.syntheticGeneratedAtUtc = null;
           toast(
-            "Browser storage was almost full; saved without synthetic rows. Download the synthetic CSV from the Synthetic step if you need that file."
+            "Saved your session without synthetic rows. Download the synthetic CSV from the Synthetic step if you need that file."
           );
         } else {
           throw e;
@@ -565,7 +573,11 @@
       return true;
     } catch (e) {
       console.error(e);
-      toast("Could not persist dataset in browser storage.");
+      const now = Date.now();
+      if (now - lastSessionSaveToastAt > 8000) {
+        lastSessionSaveToastAt = now;
+        toast("Could not save your session. Try again, or remove a library entry and retry.");
+      }
       return false;
     }
   }
@@ -687,6 +699,70 @@
     return true;
   }
 
+  function closeLibrarySessionMenus() {
+    document.querySelectorAll(".session-library-dropdown").forEach((el) => el.classList.add("hidden"));
+    document.querySelectorAll(".session-library-more").forEach((btn) => btn.setAttribute("aria-expanded", "false"));
+  }
+
+  function closeHeaderSettingsMenu() {
+    if (els.headerSettingsMenu) els.headerSettingsMenu.classList.add("hidden");
+    if (els.btnHeaderSettings) els.btnHeaderSettings.setAttribute("aria-expanded", "false");
+  }
+
+  /** Removes a library archive from localStorage. If it is the active session, starts a fresh empty session. */
+  function deleteLibraryArchive(archiveId) {
+    if (!archiveId) return;
+    try {
+      localStorage.removeItem(archiveStorageKey(archiveId));
+    } catch (e) {
+      console.error(e);
+      toast("Could not remove that session. Please try again.");
+      return;
+    }
+    const pointer = localStorage.getItem(CURRENT_ARCHIVE_ID_KEY);
+    if (state.archiveId === archiveId) {
+      startNewSession();
+      showAppScreen("library");
+    } else if (pointer === archiveId) {
+      try {
+        localStorage.removeItem(CURRENT_ARCHIVE_ID_KEY);
+      } catch {
+        /* ignore */
+      }
+      loadCurrentArchiveOrNew();
+    }
+    closeLibrarySessionMenus();
+    renderSessionLibraryList();
+    updateHomeDraftHint();
+    updateFinalizeSaveStatus();
+    toast("Session removed from this browser.");
+  }
+
+  /** Wipes all saved session archives and current pointer, then starts a fresh empty session. */
+  function clearAllSavedSessionData() {
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        if (k.startsWith(ARCHIVE_STORAGE_PREFIX) || k === CURRENT_ARCHIVE_ID_KEY || k === LEGACY_STORAGE_KEY) {
+          keys.push(k);
+        }
+      }
+      keys.forEach((k) => localStorage.removeItem(k));
+    } catch (e) {
+      console.error(e);
+      toast("Could not clear saved session data. Please try again.");
+      return;
+    }
+    startNewSession();
+    showAppScreen("library");
+    renderSessionLibraryList();
+    updateHomeDraftHint();
+    updateFinalizeSaveStatus();
+    toast("Saved session data cleared from this browser.");
+  }
+
   function listSavedSessionsMeta() {
     const out = [];
     const seen = new Set();
@@ -727,6 +803,8 @@
       return;
     }
     els.sessionLibraryEmpty.classList.add("hidden");
+    const trashSvg = `<svg class="session-library-delete-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
+    const dotsSvg = `<svg class="session-library-more-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>`;
     els.sessionLibraryList.innerHTML = items
       .map(
         (m) => `<li class="session-library-item" data-archive-id="${escapeAttr(m.archiveId)}">
@@ -736,7 +814,18 @@
           new Date(m.librarySavedAt).toLocaleString()
         )}</span>
             </div>
-            <button type="button" class="btn btn-primary session-library-open">Open</button>
+            <div class="session-library-row-actions">
+              <button type="button" class="btn btn-primary session-library-open">Open</button>
+              <div class="session-library-menu-wrap">
+                <button type="button" class="btn btn-ghost session-library-more" aria-label="More actions for this session" aria-haspopup="true" aria-expanded="false">${dotsSvg}</button>
+                <div class="session-library-dropdown hidden" role="menu">
+                  <button type="button" class="session-library-delete" role="menuitem" data-archive-id="${escapeAttr(m.archiveId)}">
+                    ${trashSvg}
+                    <span>Delete</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </li>`
       )
       .join("");
@@ -764,6 +853,7 @@
     if (els.screenEducation) els.screenEducation.classList.toggle("hidden", screen !== "education");
     if (els.appHeaderWorkflow) els.appHeaderWorkflow.classList.toggle("hidden", screen !== "create");
     setSiteNavActive(screen);
+    if (screen === "library") renderSessionLibraryList();
     renderSessionTitle();
   }
 
@@ -790,7 +880,7 @@
     state.librarySavedAt = nowIso();
     if (!saveSession()) {
       state.librarySavedAt = prevLib || null;
-      toast("Could not write to browser storage. Free space (remove old Library sessions or site data) and try Save again.");
+      toast("Could not save to your library. Try again, or delete an entry from Library and retry.");
       return;
     }
     updateFinalizeSaveStatus();
@@ -915,6 +1005,17 @@
       });
     }
 
+    const mfCols = detectLikelySexCodeColumns(headers, rows);
+    if (mfCols.length) {
+      const preview = mfCols.slice(0, 4).map((c) => `“${c}”`).join(", ");
+      const more = mfCols.length > 4 ? ` (+${mfCols.length - 4} more)` : "";
+      issues.push({
+        sev: "medium",
+        title: "Likely M/F sex code values detected",
+        detail: `Columns ${preview}${more} look encoded as M/F. You can expand these to Male/Female from Optional corrections.`,
+      });
+    }
+
     let mixedTypeCols = 0;
     headers.forEach((h) => {
       const types = new Set();
@@ -942,6 +1043,146 @@
       });
     }
     return issues;
+  }
+
+  function detectLikelySexCodeColumns(headers, rows) {
+    const out = [];
+    if (!Array.isArray(headers) || !Array.isArray(rows) || !rows.length) return out;
+    headers.forEach((h) => {
+      const freq = new Map();
+      let nonNull = 0;
+      rows.forEach((r) => {
+        const raw = r ? r[h] : "";
+        const s = String(raw ?? "").trim();
+        if (!s) return;
+        nonNull++;
+        const key = s.toUpperCase();
+        freq.set(key, (freq.get(key) || 0) + 1);
+      });
+      if (nonNull < 8) return;
+      const m = freq.get("M") || 0;
+      const f = freq.get("F") || 0;
+      const codeHits = m + f;
+      if (!codeHits) return;
+      const ratio = codeHits / nonNull;
+      const distinct = freq.size;
+      const name = String(h || "").toLowerCase();
+      const headerHints = /(sex|gender|biological[_\s-]?sex)/i.test(name);
+      const hasBoth = m > 0 && f > 0;
+      const dominantSingleCode = (m > 0 || f > 0) && ratio >= 0.9;
+      if ((ratio >= 0.7 && hasBoth && distinct <= 6) || (headerHints && dominantSingleCode && distinct <= 8)) out.push(h);
+    });
+    return out;
+  }
+
+  function inferIssueFixAction(issue) {
+    const title = String((issue && issue.title) || "");
+    const detail = String((issue && issue.detail) || "");
+    const sev = sevClass(issue && issue.sev);
+    if (sev === "low") return null;
+
+    if (/whitespace in column names/i.test(title)) {
+      return {
+        type: "trim",
+        label: "Trim whitespace in headers and text values across the dataset.",
+      };
+    }
+    if (/duplicate rows/i.test(title)) {
+      return {
+        type: "dedupe",
+        label: "Remove duplicate rows where all column values match.",
+      };
+    }
+    if (/completely empty rows|no usable rows/i.test(detail) || /empty rows/i.test(title)) {
+      return {
+        type: "dropEmpty",
+        label: "Remove rows that are fully empty.",
+      };
+    }
+    if (/m\/f sex code/i.test(title) || /sex\/gender codes?:\s*m\/f/i.test(detail)) {
+      return {
+        type: "expandSexCodes",
+        label: "Convert likely sex or gender codes from M/F to Male/Female.",
+      };
+    }
+    return null;
+  }
+
+  function runActionableIssueFix(action) {
+    if (!action || !action.type) return false;
+    let rows = state.rows.map((r) => ({ ...r }));
+    let headers = [...state.headers];
+    let changed = false;
+
+    if (action.type === "trim") {
+      const newHeaders = headers.map((h) => h.trim());
+      const anyHeaderChanged = newHeaders.some((h, i) => h !== headers[i]);
+      rows = rows.map((r) => {
+        const o = {};
+        headers.forEach((oldH, i) => {
+          const nh = newHeaders[i];
+          let v = r[oldH];
+          if (typeof v === "string") {
+            const t = v.trim();
+            if (t !== v) changed = true;
+            v = t;
+          }
+          o[nh] = v;
+        });
+        return o;
+      });
+      if (anyHeaderChanged) changed = true;
+      state.headers = newHeaders;
+      headers = newHeaders;
+    } else if (action.type === "dedupe") {
+      const seen = new Set();
+      const before = rows.length;
+      rows = rows.filter((r) => {
+        const key = state.headers.map((h) => String(r[h] ?? "")).join("\t");
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      changed = rows.length !== before;
+    } else if (action.type === "dropEmpty") {
+      const before = rows.length;
+      rows = rows.filter((r) =>
+        state.headers.some((h) => {
+          const v = r[h];
+          return v !== "" && v != null;
+        })
+      );
+      changed = rows.length !== before;
+    } else if (action.type === "expandSexCodes") {
+      const targets = new Set(detectLikelySexCodeColumns(state.headers, rows));
+      if (targets.size) {
+        rows = rows.map((r) => {
+          const o = { ...r };
+          targets.forEach((h) => {
+            const raw = o[h];
+            const s = String(raw ?? "").trim();
+            const u = s.toUpperCase();
+            if (u === "M") {
+              o[h] = "Male";
+              changed = true;
+            } else if (u === "F") {
+              o[h] = "Female";
+              changed = true;
+            }
+          });
+          return o;
+        });
+      }
+    }
+
+    if (!changed) return false;
+    state.rows = rows;
+    const Papa = window.Papa;
+    state.rawText = Papa.unparse({
+      fields: state.headers,
+      data: rows.map((r) => state.headers.map((h) => r[h] ?? "")),
+    });
+    return true;
   }
 
   function getColumnIncludeMap() {
@@ -4977,8 +5218,12 @@
   }
 
   function pruneInspectionHygieneAcceptedToIssues(issues) {
-    const idSet = new Set((issues || []).map((x) => (x && x.id ? x.id : null)).filter(Boolean));
-    state.inspectionHygieneAccepted = (state.inspectionHygieneAccepted || []).filter((a) => idSet.has(a.id));
+    const keepId = new Set(
+      (issues || [])
+        .filter((x) => x && x.id && sevClass(x.sev) !== "low")
+        .map((x) => x.id)
+    );
+    state.inspectionHygieneAccepted = (state.inspectionHygieneAccepted || []).filter((a) => keepId.has(a.id));
   }
 
   function hasAcceptedInspectionHygieneGuidance() {
@@ -5085,7 +5330,7 @@
   }
 
   function normalizeMetadataAiSuggestionItems(rawSuggestions, runId) {
-    const list = Array.isArray(rawSuggestions) ? rawSuggestions.slice(0, 4) : [];
+    const list = Array.isArray(rawSuggestions) ? rawSuggestions.slice(0, 3) : [];
     return list.map((s, i) => {
       const impRaw = String(s.importance || "medium").toLowerCase();
       const imp = impRaw === "high" || impRaw === "low" ? impRaw : "medium";
@@ -5296,11 +5541,13 @@
     const accepted = new Set((state.inspectionHygieneAccepted || []).map((a) => a.id));
     els.issueList.innerHTML = (state.issues || [])
       .map((i) => {
-        const fix = String(i.suggestedFix || "").trim();
+        const action = inferIssueFixAction(i);
+        const fix = action && action.label ? action.label : String(i.suggestedFix || "").trim();
         const hasFix = fix.length > 0;
+        const canAccept = hasFix && sevClass(i.sev) !== "low";
         const isAcc = i.id && accepted.has(i.id);
         const fixBlock = hasFix ? `<div class="issue-suggested-fix"><p>${escapeHtml(fix)}</p></div>` : "";
-        const actions = hasFix
+        const actions = canAccept
           ? isAcc
             ? `<div class="issue-hygiene-actions"><span class="issue-accepted-pill">Accepted — also under Metadata → Review metadata changes</span><button type="button" class="btn btn-ghost btn-sm issue-hygiene-undo" data-revert-hygiene-id="${escapeAttr(i.id)}">Undo accept</button></div>`
             : `<div class="issue-hygiene-actions"><button type="button" class="btn btn-secondary btn-sm" data-accept-hygiene-id="${escapeAttr(i.id)}">Accept fix</button></div>`
@@ -5844,8 +6091,18 @@
         if (!id) return;
         const issue = (state.issues || []).find((x) => x.id === id);
         if (!issue) return;
-        const suggestedFix = String(issue.suggestedFix || "").trim();
+        const action = inferIssueFixAction(issue);
+        if (sevClass(issue.sev) === "low") return;
+        const suggestedFix = String(action && action.label ? action.label : issue.suggestedFix || "").trim();
         if (!suggestedFix) return;
+        const changed = action ? runActionableIssueFix(action) : false;
+        if (changed) {
+          state.inspectionHygieneAccepted = [];
+          saveSession();
+          renderInspect();
+          toast("Fix applied to the dataset.");
+          return;
+        }
         if (!state.inspectionHygieneAccepted) state.inspectionHygieneAccepted = [];
         if (state.inspectionHygieneAccepted.some((x) => x.id === id)) return;
         state.inspectionHygieneAccepted.push({
@@ -5859,7 +6116,7 @@
         renderIssueList();
         if (state.step === 2 && state.metadataPane === "changesReview") renderMetadataChangesReview();
         updateMetadataSectionNotesVisibility();
-        toast("Saved for this session. See Metadata → Review metadata changes.");
+        toast("Fix recorded for this session.");
       });
     }
 
@@ -6192,17 +6449,82 @@
 
     if (els.sessionLibraryList) {
       els.sessionLibraryList.addEventListener("click", (e) => {
+        const more = e.target.closest(".session-library-more");
+        if (more) {
+          e.stopPropagation();
+          const wrap = more.closest(".session-library-menu-wrap");
+          const dd = wrap && wrap.querySelector(".session-library-dropdown");
+          const wasOpen = dd && !dd.classList.contains("hidden");
+          closeLibrarySessionMenus();
+          if (dd && !wasOpen) {
+            dd.classList.remove("hidden");
+            more.setAttribute("aria-expanded", "true");
+          }
+          return;
+        }
+        const del = e.target.closest(".session-library-delete");
+        if (del) {
+          e.stopPropagation();
+          const id = del.getAttribute("data-archive-id");
+          if (!id) return;
+          if (
+            !window.confirm("Remove this saved session from this browser? This cannot be undone.")
+          ) {
+            closeLibrarySessionMenus();
+            return;
+          }
+          deleteLibraryArchive(id);
+          return;
+        }
         const open = e.target.closest(".session-library-open");
         if (!open) return;
         const li = open.closest("[data-archive-id]");
         const id = li && li.getAttribute("data-archive-id");
         if (!id) return;
+        closeLibrarySessionMenus();
         if (loadArchiveSession(id)) {
           enterStudio();
           toast("Session loaded.");
         }
       });
     }
+
+    if (els.btnLibraryClearAll) {
+      els.btnLibraryClearAll.addEventListener("click", () => {
+        if (!window.confirm("Clear all saved session data from this browser? This cannot be undone.")) return;
+        clearAllSavedSessionData();
+      });
+    }
+
+    if (els.btnHeaderSettings && els.headerSettingsMenu) {
+      els.btnHeaderSettings.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isOpen = !els.headerSettingsMenu.classList.contains("hidden");
+        closeHeaderSettingsMenu();
+        if (!isOpen) {
+          els.headerSettingsMenu.classList.remove("hidden");
+          els.btnHeaderSettings.setAttribute("aria-expanded", "true");
+        }
+      });
+    }
+
+    if (els.btnClearSessionDataGlobal) {
+      els.btnClearSessionDataGlobal.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeHeaderSettingsMenu();
+        if (!window.confirm("Clear all saved session data from this browser? This cannot be undone.")) return;
+        clearAllSavedSessionData();
+      });
+    }
+
+    document.addEventListener("click", () => {
+      if (!els.screenLibrary || els.screenLibrary.classList.contains("hidden")) return;
+      closeLibrarySessionMenus();
+    });
+
+    document.addEventListener("click", () => {
+      closeHeaderSettingsMenu();
+    });
 
     els.stepper.addEventListener("click", (e) => {
       const item = e.target.closest(".stepper-item");

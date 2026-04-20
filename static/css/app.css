@@ -496,10 +496,11 @@ main {
 }
 
 .agent-avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-sm);
-  background: var(--blue-100);
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  background: transparent;
+  border: none;
   color: var(--blue-700);
   display: flex;
   align-items: center;
@@ -507,6 +508,16 @@ main {
   font-weight: 700;
   font-size: 0.75rem;
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.agent-avatar-img {
+  width: 30px;
+  height: 30px;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .agent-banner-main {
@@ -2516,6 +2527,16 @@ body.printing-session-report #session-report-print-root[hidden] {
   border-radius: 6px;
 }
 
+.metadata-ai-agent-logo--summary {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  background: #eaf5ff;
+  border: 1px solid #d6eaff;
+  border-radius: 6px;
+  padding: 1px;
+}
+
 .metadata-ai-suggestions {
   margin-top: 0;
   padding: 0;
@@ -2541,7 +2562,13 @@ body.printing-session-report #session-report-print-root[hidden] {
 
 .metadata-ai-agent-logo--hero {
   display: block;
-  border-radius: 12px;
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  background: #eaf5ff;
+  border: 1px solid #d6eaff;
+  border-radius: 10px;
+  padding: 2px;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
 }
 
@@ -3458,6 +3485,65 @@ details.review-section > .review-section-summary::marker {
   align-self: center;
 }
 
+.header-settings-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.header-settings-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.header-settings-btn:hover {
+  color: var(--text);
+  border-color: rgba(14, 165, 233, 0.35);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.header-settings-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 12.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 0.35rem 0;
+  z-index: 50;
+}
+
+.header-settings-menu.hidden {
+  display: none;
+}
+
+.header-settings-menu-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-size: 0.84rem;
+  color: #991b1b;
+  padding: 0.55rem 0.85rem;
+  cursor: pointer;
+}
+
+.header-settings-menu-item:hover {
+  background: #fef2f2;
+}
+
 .app-site-nav-btn {
   font-family: inherit;
   font-size: 0.84375rem;
@@ -3492,6 +3578,10 @@ details.review-section > .review-section-summary::marker {
   .app-site-nav {
     align-self: stretch;
     justify-content: flex-start;
+  }
+
+  .header-settings-wrap {
+    align-self: flex-end;
   }
 }
 
@@ -3724,7 +3814,25 @@ details.review-section > .review-section-summary::marker {
   gap: 0.75rem;
 }
 
+.library-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.library-clear-btn {
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.library-clear-btn:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #7f1d1d;
+}
+
 .session-library-item {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3734,6 +3842,79 @@ details.review-section > .review-section-summary::marker {
   background: var(--blue-50);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+.session-library-meta {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.session-library-row-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.session-library-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* Icon-only; uses shared .btn / .btn-ghost curve + grey treatment like other outline buttons */
+.session-library-more {
+  padding: 0.625rem 0.8rem;
+  line-height: 1;
+}
+
+.session-library-more-icon {
+  display: block;
+}
+
+.session-library-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 11rem;
+  padding: 0.35rem 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  z-index: 20;
+}
+
+.session-library-dropdown.hidden {
+  display: none;
+}
+
+.session-library-delete {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.55rem 0.85rem;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--danger);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.session-library-delete:hover {
+  background: #fef2f2;
+}
+
+.session-library-delete-icon {
+  flex-shrink: 0;
+  color: var(--danger);
 }
 
 .session-library-name {

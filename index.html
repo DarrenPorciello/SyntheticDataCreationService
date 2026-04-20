@@ -42,6 +42,17 @@
               <button type="button" class="app-site-nav-btn" data-app-screen="library" id="nav-library">Library</button>
               <button type="button" class="app-site-nav-btn" data-app-screen="education" id="nav-education">Education</button>
             </nav>
+            <div class="header-settings-wrap">
+              <button type="button" class="header-settings-btn" id="btn-header-settings" aria-haspopup="true" aria-expanded="false" aria-label="Settings">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <circle cx="12" cy="12" r="3.2" />
+                  <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .16 1.7 1.7 0 0 0-.9 1.54V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-.9-1.54 1.7 1.7 0 0 0-1-.16 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.16-1 1.7 1.7 0 0 0-1.54-.9H2.8a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.54-.9 1.7 1.7 0 0 0 .16-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.16 1.7 1.7 0 0 0 .9-1.54V2.8a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 .9 1.54 1.7 1.7 0 0 0 1 .16 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 .16 1 1.7 1.7 0 0 0 1.54.9h.09a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.54.9 1.7 1.7 0 0 0-.16 1z" />
+                </svg>
+              </button>
+              <div class="header-settings-menu hidden" id="header-settings-menu" role="menu">
+                <button type="button" class="header-settings-menu-item" id="btn-clear-session-data-global" role="menuitem">Clear saved session data</button>
+              </div>
+            </div>
           </div>
           <p class="session-context hidden" id="session-context-title" aria-live="polite" aria-hidden="true"></p>
         </div>
@@ -166,12 +177,13 @@
             </summary>
             <div class="review-section-body">
               <p class="panel-lead">
-                Structural summary, charts, and optional fixes — plus an OpenAI-powered hygiene pass when you run the local
-                API server (your key stays on the server).
+                Quick checks and guided fixes to keep your dataset accurate, consistent, and ready for synthetic generation.
               </p>
 
               <div class="agent-banner" id="agent-banner">
-                <div class="agent-avatar" aria-hidden="true">AI</div>
+                <div class="agent-avatar" aria-hidden="true">
+                  <img class="agent-avatar-img" src="static/images/data-hygiene-agent-v2.png" alt="" decoding="async" />
+                </div>
                 <div class="agent-banner-main">
                   <h3>Data quality agent</h3>
                   <p id="agent-summary">
@@ -303,27 +315,7 @@
           <summary class="meta-section-summary">
             <span class="meta-section-summary-main metadata-ai-summary-row">
               <span class="metadata-ai-summary-icon" aria-hidden="true">
-                <svg class="metadata-ai-agent-logo" viewBox="0 0 40 40" width="22" height="22" focusable="false">
-                  <defs>
-                    <linearGradient id="metadataAgentMarkGrad" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
-                      <stop offset="0%" stop-color="#38bdf8" />
-                      <stop offset="100%" stop-color="#6366f1" />
-                    </linearGradient>
-                  </defs>
-                  <rect width="40" height="40" rx="10" fill="url(#metadataAgentMarkGrad)" />
-                  <rect x="10" y="11" width="20" height="16" rx="7" fill="#fff" fill-opacity="0.96" />
-                  <circle cx="17" cy="18" r="1.6" fill="#1e3a8a" />
-                  <circle cx="23" cy="18" r="1.6" fill="#1e3a8a" />
-                  <path
-                    d="M15.5 22.3c1.2 1.6 2.7 2.4 4.5 2.4s3.3-.8 4.5-2.4"
-                    stroke="#1e3a8a"
-                    stroke-width="1.6"
-                    stroke-linecap="round"
-                    fill="none"
-                  />
-                  <path d="M20 11V8" stroke="#fff" stroke-width="2" stroke-linecap="round" />
-                  <circle cx="20" cy="6.7" r="1.5" fill="#fff" />
-                </svg>
+                <img class="metadata-ai-agent-logo metadata-ai-agent-logo--summary" src="static/images/metadata-agent-v3.png" alt="" decoding="async" />
               </span>
               <span class="meta-section-title" id="ai-metadata-assistant-heading">AI Metadata Agent</span>
             </span>
@@ -332,27 +324,7 @@
             <div class="metadata-ai-suggestions" id="metadata-ai-suggestions-block">
               <div class="metadata-agent-intro">
                 <div class="metadata-agent-brand" aria-hidden="true">
-                  <svg class="metadata-ai-agent-logo metadata-ai-agent-logo--hero" viewBox="0 0 40 40" width="48" height="48" focusable="false">
-                    <defs>
-                      <linearGradient id="metadataAgentHeroGrad" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
-                        <stop offset="0%" stop-color="#38bdf8" />
-                        <stop offset="100%" stop-color="#6366f1" />
-                      </linearGradient>
-                    </defs>
-                    <rect width="40" height="40" rx="10" fill="url(#metadataAgentHeroGrad)" />
-                    <rect x="10" y="11" width="20" height="16" rx="7" fill="#fff" fill-opacity="0.96" />
-                    <circle cx="17" cy="18" r="1.6" fill="#1e3a8a" />
-                    <circle cx="23" cy="18" r="1.6" fill="#1e3a8a" />
-                    <path
-                      d="M15.5 22.3c1.2 1.6 2.7 2.4 4.5 2.4s3.3-.8 4.5-2.4"
-                      stroke="#1e3a8a"
-                      stroke-width="1.6"
-                      stroke-linecap="round"
-                      fill="none"
-                    />
-                    <path d="M20 11V8" stroke="#fff" stroke-width="2" stroke-linecap="round" />
-                    <circle cx="20" cy="6.7" r="1.5" fill="#fff" />
-                  </svg>
+                  <img class="metadata-ai-agent-logo metadata-ai-agent-logo--hero" src="static/images/metadata-agent-v3.png" alt="" decoding="async" />
                 </div>
                 <div class="metadata-agent-copy">
                   <p class="metadata-agent-kicker">Your metadata coach</p>
@@ -779,8 +751,12 @@
         <div class="panel">
           <h2 class="panel-title">Library</h2>
           <p class="panel-lead">
-            Sessions you save from <strong>Finalize</strong> appear here. Open one to jump back into the workflow with the same data and step.
+            Sessions you save from <strong>Finalize</strong> appear here. Open one to jump back into the workflow with the same
+            data and step. Use the <strong>three-dot menu</strong> on a row to delete a copy from this browser.
           </p>
+          <div class="library-toolbar no-print">
+            <button type="button" class="btn btn-ghost library-clear-btn" id="btn-library-clear-all">Clear saved session data</button>
+          </div>
           <ul id="session-library-list" class="session-library-list"></ul>
           <p class="panel-lead hidden" id="session-library-empty">No saved sessions yet. Finish a workflow and use <strong>Save session to library</strong> on the Finalize step.</p>
         </div>
