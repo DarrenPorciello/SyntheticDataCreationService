@@ -415,6 +415,61 @@
     }
   }
 
+  function buildSynthetixHelpContext() {
+    const inc = getColumnIncludeMap();
+    const includedColumns = state.headers.filter((h) => inc[h] !== false);
+    const excludedColumns = state.headers.filter((h) => inc[h] === false);
+    const colEdits = state.columnMetadataEdits && typeof state.columnMetadataEdits === "object" ? state.columnMetadataEdits : {};
+    const columnsWithEdits = Object.keys(colEdits);
+    const protectIdentifierColumns = columnsWithEdits.filter((h) => {
+      const ed = colEdits[h];
+      return !!(ed && ed.protectIdentifiers);
+    });
+    const numericShapeOverrides = columnsWithEdits
+      .map((h) => ({ col: h, shape: colEdits[h] && colEdits[h].synthDist ? String(colEdits[h].synthDist) : "auto" }))
+      .filter((x) => x.shape && x.shape !== "auto")
+      .slice(0, 40);
+    const momentOverrides = columnsWithEdits
+      .map((h) => {
+        const ed = colEdits[h] || {};
+        const mean = parseOptionalNumber(ed.synthMean);
+        const variance = parseOptionalNumber(ed.synthVariance);
+        if (mean == null && variance == null) return null;
+        return { col: h, ...(mean != null ? { mean } : {}), ...(variance != null ? { variance } : {}) };
+      })
+      .filter(Boolean)
+      .slice(0, 40);
+    const corr = state.correlationEdits && typeof state.correlationEdits === "object" ? state.correlationEdits : {};
+    const corrOverrides = Object.keys(corr)
+      .slice(0, 100)
+      .map((k) => {
+        const parts = k.split("\x00");
+        if (parts.length !== 2) return null;
+        return { a: parts[0], b: parts[1], r: Number(corr[k]) };
+      })
+      .filter(Boolean);
+
+    return {
+      step: STEPS[state.step] ? STEPS[state.step].id : null,
+      file_name: state.fileName || null,
+      rows_original: state.rows.length,
+      rows_synthetic: state.syntheticRows.length,
+      synthetic_goal: state.syntheticGoal || "",
+      synthetic_row_count_target: state.syntheticRowCount || null,
+      synthetic_generated_at_utc: state.syntheticGeneratedAtUtc || null,
+      columns_total: state.headers.length,
+      columns_included: includedColumns.length,
+      included_columns_sample: includedColumns.slice(0, 50),
+      excluded_columns_sample: excludedColumns.slice(0, 50),
+      metadata_edit_count: columnsWithEdits.length,
+      protect_identifier_columns: protectIdentifierColumns.slice(0, 50),
+      numeric_shape_overrides: numericShapeOverrides,
+      numeric_moment_overrides: momentOverrides,
+      correlation_override_count: Object.keys(corr).length,
+      correlation_overrides_sample: corrOverrides,
+    };
+  }
+
   async function sendSynthetixHelpMessage() {
     if (!els.synthetixHelpChatInput || !els.synthetixHelpChatSend) return;
     const message = String(els.synthetixHelpChatInput.value || "").trim();
@@ -432,6 +487,7 @@
         body: JSON.stringify({
           message,
           history: synthetixHelpHistory,
+          context: buildSynthetixHelpContext(),
         }),
       });
       const raw = await res.json().catch(() => ({}));
@@ -1819,7 +1875,7 @@
     }
     const L = choleskyLowerWithJitter(matrix);
     if (!L) return null;
-    return { cols, L };
+    return { cols, L, targetMatrix: matrix };
   }
 
   function sampleCorrelatedNormalVector(ctx, rng) {
@@ -1833,6 +1889,155 @@
       y[i] = s;
     }
     return y;
+  }
+
+  function solveLowerTriangular(L, b) {
+    const n = L.length;
+    const x = new Array(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      let s = Number(b[i]) || 0;
+      for (let j = 0; j < i; j++) s -= (Number(L[i][j]) || 0) * x[j];
+      const d = Number(L[i][i]) || 0;
+      if (!(Math.abs(d) > 1e-12)) return null;
+      x[i] = s / d;
+    }
+    return x;
+  }
+
+  /**
+   * Correlation calibration pass:
+   * adjust complete numeric rows so generated Pearson correlations closely follow the target matrix.
+   */
+  function calibrateGeneratedNumericCorrelations(rows, corrCtx, metaByName, colStats) {
+    if (!rows || !rows.length || !corrCtx || !Array.isArray(corrCtx.cols) || corrCtx.cols.length < 2) return;
+    const targetCols = corrCtx.cols.filter((h) => {
+      const meta = metaByName.get(h);
+      if (!meta || meta.effective_synthesis_dtype !== "numeric") return false;
+      const edCol = getEditForCol(h);
+      return !(edCol && edCol.protectIdentifiers);
+    });
+    const k = targetCols.length;
+    if (k < 2) return;
+
+    const colIx = new Map(targetCols.map((h, i) => [h, i]));
+    const fullIxByName = new Map(corrCtx.cols.map((h, i) => [h, i]));
+    const targetMatrix = Array.from({ length: k }, () => Array(k).fill(0));
+    for (let i = 0; i < k; i++) {
+      for (let j = 0; j < k; j++) {
+        if (i === j) {
+          targetMatrix[i][j] = 1;
+          continue;
+        }
+        const ai = fullIxByName.get(targetCols[i]);
+        const bj = fullIxByName.get(targetCols[j]);
+        const raw =
+          ai != null && bj != null && corrCtx.targetMatrix && corrCtx.targetMatrix[ai]
+            ? Number(corrCtx.targetMatrix[ai][bj])
+            : 0;
+        targetMatrix[i][j] = Number.isFinite(raw) ? Math.max(-0.999, Math.min(0.999, raw)) : 0;
+      }
+    }
+
+    const completeRows = [];
+    const X = [];
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      const vec = new Array(k);
+      let ok = true;
+      for (let j = 0; j < k; j++) {
+        const v = row[targetCols[j]];
+        const x = Number(String(v == null ? "" : v).replace(/,/g, ""));
+        if (!Number.isFinite(x)) {
+          ok = false;
+          break;
+        }
+        vec[j] = x;
+      }
+      if (!ok) continue;
+      completeRows.push(r);
+      X.push(vec);
+    }
+    const n = X.length;
+    if (n < Math.max(30, k + 5)) return;
+
+    const means = new Array(k).fill(0);
+    for (let j = 0; j < k; j++) {
+      let s = 0;
+      for (let i = 0; i < n; i++) s += X[i][j];
+      means[j] = s / n;
+    }
+    const stds = new Array(k).fill(0);
+    for (let j = 0; j < k; j++) {
+      let ss = 0;
+      for (let i = 0; i < n; i++) {
+        const d = X[i][j] - means[j];
+        ss += d * d;
+      }
+      stds[j] = Math.sqrt(Math.max(1e-12, ss / Math.max(1, n - 1)));
+    }
+
+    const Z = Array.from({ length: n }, () => new Array(k).fill(0));
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < k; j++) Z[i][j] = (X[i][j] - means[j]) / stds[j];
+    }
+
+    const S = Array.from({ length: k }, () => Array(k).fill(0));
+    for (let a = 0; a < k; a++) {
+      for (let b = a; b < k; b++) {
+        let s = 0;
+        for (let i = 0; i < n; i++) s += Z[i][a] * Z[i][b];
+        const c = s / Math.max(1, n - 1);
+        S[a][b] = c;
+        S[b][a] = c;
+      }
+      S[a][a] = 1;
+    }
+
+    const Ls = choleskyLowerWithJitter(S);
+    const Lt = choleskyLowerWithJitter(targetMatrix);
+    if (!Ls || !Lt) return;
+
+    const A = Array.from({ length: k }, () => Array(k).fill(0));
+    for (let col = 0; col < k; col++) {
+      const b = new Array(k).fill(0);
+      b[col] = 1;
+      const invCol = solveLowerTriangular(Ls, b);
+      if (!invCol) return;
+      for (let i = 0; i < k; i++) {
+        let s = 0;
+        for (let t = 0; t < k; t++) s += (Number(Lt[i][t]) || 0) * invCol[t];
+        A[i][col] = s;
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      const z = Z[i];
+      const z2 = new Array(k).fill(0);
+      for (let a = 0; a < k; a++) {
+        let s = 0;
+        for (let b = 0; b < k; b++) s += A[a][b] * z[b];
+        z2[a] = s;
+      }
+      const row = rows[completeRows[i]];
+      for (let j = 0; j < k; j++) {
+        const col = targetCols[j];
+        const st = colStats.find((x) => x.name === col);
+        const meta = metaByName.get(col);
+        let x = means[j] + z2[j] * stds[j];
+        const t = meta && meta.synthetic_numeric_targets;
+        const mn = parseOptionalNumber(t && t.range ? t.range.min : null);
+        const mx = parseOptionalNumber(t && t.range ? t.range.max : null);
+        if (mn != null && Number.isFinite(mn)) x = Math.max(mn, x);
+        if (mx != null && Number.isFinite(mx)) x = Math.min(mx, x);
+        if (st && st.numericSample && st.numericSample.length) {
+          const obsMin = Math.min(...st.numericSample);
+          const obsMax = Math.max(...st.numericSample);
+          if (Number.isFinite(obsMin)) x = Math.max(obsMin, x);
+          if (Number.isFinite(obsMax)) x = Math.min(obsMax, x);
+        }
+        row[col] = formatSynthCellValue(x);
+      }
+    }
   }
 
   function sampleNumericFromColumnMetaAtQuantile(meta, st, rng, qIn) {
@@ -1952,7 +2157,79 @@
       label,
       proportion: counts[i] / total,
       original: counts[i] / total,
+      min,
+      max,
+      step,
+      binIndex: i,
     }));
+  }
+
+  function columnHasNumericTargetEdits(ed) {
+    if (!ed || typeof ed !== "object") return false;
+    if (ed.synthDist && ed.synthDist !== "auto") return true;
+    if (["synthMin", "synthMax", "synthMean", "synthVariance"].some((k) => String(ed[k] || "").trim())) return true;
+    return false;
+  }
+
+  /**
+   * Distribution preview uses full numeric target edits (mean/variance/range/shape),
+   * not only manually dragged histogram bins.
+   */
+  function deriveNumericDistributionPreviewShares(colName, colStat, ed, baseBins) {
+    if (!baseBins || !baseBins.length) return [];
+    const parsed = parseNumericHistogramProportionsJson(ed.synthNumHistCustom, { silent: true });
+    if (parsed && parsed.length) {
+      const byLabel = new Map();
+      parsed.forEach((r) => {
+        byLabel.set(String(r.label), Number(r.proportion));
+      });
+      const current = baseBins.map((b) => {
+        const p = byLabel.get(b.label);
+        return Number.isFinite(p) && p >= 0 ? p : b.proportion;
+      });
+      const sumC = current.reduce((a, x) => a + x, 0) || 1;
+      return current.map((x) => Math.max(0, x / sumC));
+    }
+    if (!columnHasNumericTargetEdits(ed)) {
+      return baseBins.map((b) => b.proportion);
+    }
+    if (!colStat || !Array.isArray(colStat.numericSample) || colStat.numericSample.length < 3) {
+      return baseBins.map((b) => b.proportion);
+    }
+    const observed = computeNumericSummaryFromSamples(colStat.numericSample);
+    if (!observed) return baseBins.map((b) => b.proportion);
+    const synthTargets = buildSyntheticNumericTargetsFromEdits(ed, observed);
+    if (!synthTargets) return baseBins.map((b) => b.proportion);
+
+    const meta = {
+      numeric_summary: {
+        min: observed.min,
+        max: observed.max,
+        mean: observed.mean,
+        median: observed.median,
+        std: observed.std,
+        variance: observed.variance,
+      },
+      synthetic_numeric_targets: synthTargets,
+    };
+    const draws = Math.min(5000, Math.max(1000, colStat.numericSample.length));
+    const counts = new Array(baseBins.length).fill(0);
+    const first = baseBins[0] || {};
+    const min = Number(first.min);
+    const step = Number(first.step);
+    const bins = baseBins.length;
+    const rng = mulberry32(hashStringToUint32(`dist_preview\0${colName}\0${JSON.stringify(synthTargets)}`));
+    for (let i = 0; i < draws; i++) {
+      const x = sampleNumericFromColumnMeta(meta, colStat, rng);
+      if (!Number.isFinite(x) || !Number.isFinite(min) || !Number.isFinite(step) || step <= 0) continue;
+      let bi = Math.floor((x - min) / step);
+      if (bi >= bins) bi = bins - 1;
+      if (bi < 0) bi = 0;
+      counts[bi] += 1;
+    }
+    const total = counts.reduce((a, b) => a + b, 0);
+    if (!(total > 0)) return baseBins.map((b) => b.proportion);
+    return counts.map((c) => c / total);
   }
 
   function numericHistogramMatchesBaseline(baseBins, proportions) {
@@ -2858,6 +3135,7 @@
       }
       out.push(row);
     }
+    calibrateGeneratedNumericCorrelations(out, corrCtx, metaByName, colStats);
     return out;
   }
 
@@ -5041,17 +5319,7 @@
     const base = buildObservedNumericHistogramBins(colStat);
     if (!base || base.length < 2) return "";
     const ed = getEditForCol(colName);
-    const parsed = parseNumericHistogramProportionsJson(ed.synthNumHistCustom, { silent: true });
-    const byLabel = new Map();
-    (parsed || []).forEach((r) => {
-      byLabel.set(String(r.label), Number(r.proportion));
-    });
-    const current = base.map((b) => {
-      const p = byLabel.get(b.label);
-      return Number.isFinite(p) && p >= 0 ? p : b.proportion;
-    });
-    const sumC = current.reduce((a, x) => a + x, 0) || 1;
-    const norm = current.map((x) => Math.max(0, x / sumC));
+    const norm = deriveNumericDistributionPreviewShares(colName, colStat, ed, base);
     const maxScale = Math.max(...base.map((b) => b.original), ...norm, 1e-9) * 1.06;
 
     const W = 400;

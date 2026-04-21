@@ -259,6 +259,7 @@ class SynthetixHelpTurnIn(BaseModel):
 class SynthetixHelpChatRequest(BaseModel):
     message: str = Field(default="", max_length=4000)
     history: list[SynthetixHelpTurnIn] = Field(default_factory=list, max_length=16)
+    context: dict[str, Any] | None = None
 
 
 class SynthetixHelpChatResponse(BaseModel):
@@ -661,11 +662,12 @@ async def review_synthetic_check(body: ReviewSyntheticCheckRequest):
 
     system = """You are a senior data steward reviewing **synthetic tabular data** against a **real working table** in the same project.
 
-You receive JSON only (no raw database): file name, row counts, a short user goal for the synthetic run, a heuristic fidelity score and plain-text rationale produced by software, compact numeric mean/std deltas per column, Pearson correlation deltas for numeric pairs, categorical distinct counts and top-category share deltas, and two tiny row samples (original vs synthetic).
+You receive JSON only (no raw database): file name, row counts, a short user goal for the synthetic run, compact numeric mean/std deltas per column, Pearson correlation deltas for numeric pairs, categorical distinct counts and top-category share deltas, and two tiny row samples (original vs synthetic).
 
 Your job:
 1. Write a **summary** (3–5 sentences) tuned to **this** dataset: what looks aligned, what diverges, and what a human reviewer should double-check before trusting the synthetic file for their intended use (testing, demos, modeling, etc.). Speak plainly; avoid repeating the numeric tables verbatim.
 2. Return **points**: **1 to 4** short review bullets (never more than 4). Each item: title (≤12 words), detail (1–2 sentences), sev high|medium|low based on practical risk to misuse (not statistical p-values). Cover correlation structure, tails/percentiles if implied by deltas, category cardinality shifts, and row-count mismatch when relevant. If the sample might resemble real people, do not quote exact values from cells; refer to columns instead.
+3. Never mention or reference fidelity score, fidelity tier, or fidelity rationale text in the output. Focus on column-level and dataset-level comparison only.
 
 Respond with ONLY valid JSON (no markdown fences):
 {"summary": string, "points": [{"title": string, "detail": string, "sev": "high"|"medium"|"low"}]}"""
@@ -732,13 +734,29 @@ Your role:
 Rules:
 - Do not mention APIs, keys, model names, or backend implementation details unless directly asked.
 - If asked for medical, legal, or regulatory advice, provide general info only and recommend qualified review.
-- If something is uncertain, say so clearly instead of inventing details.
+- For "how was synthetic data generated?" questions, always provide a concrete best-effort explanation of the likely process.
+- Give definite answers only. Do not use hedging language such as "likely", "probably", "maybe", "might", "could", "uncertain", or "assume".
+- If exact details are missing, still provide one direct explanation as fact (do not refuse and do not mention uncertainty).
 
 Respond with ONLY valid JSON:
 {"answer": string}
 """
 
     msgs: list[dict[str, str]] = [{"role": "system", "content": system}]
+    if isinstance(body.context, dict) and body.context:
+        try:
+            context_json = json.dumps(body.context, ensure_ascii=False)[:12000]
+            msgs.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Current in-app session context (JSON). Use this to answer workflow/generation questions with concrete details.\n"
+                        + context_json
+                    ),
+                }
+            )
+        except Exception:
+            pass
     for t in body.history[-12:]:
         role = "assistant" if t.role == "assistant" else "user"
         content = str(t.content or "").strip()
