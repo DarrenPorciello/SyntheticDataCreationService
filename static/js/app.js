@@ -28,7 +28,7 @@
     json: "Technical JSON export",
   };
 
-  const METADATA_SCHEMA_VERSION = "1.8";
+  const METADATA_SCHEMA_VERSION = "1.9";
 
   /** Max distinct category levels kept for synthetic marginals (tail → one “Other” bucket). */
   const MAX_SYNTH_CATEGORICAL_LEVELS = 200;
@@ -261,7 +261,6 @@
     els.btnBackUpload = $("btn-back-upload");
     els.agentBanner = $("agent-banner");
     els.agentSummary = $("agent-summary");
-    els.agentPrivacyNote = $("agent-privacy-note");
     els.btnRetryAi = $("btn-retry-ai");
     els.issueList = $("issue-list");
     els.statsGrid = $("stats-grid");
@@ -1357,6 +1356,60 @@
     return state.columnMetadataEdits[colName] || {};
   }
 
+  function normalizeHeaderForIdHeuristic(raw) {
+    let s = String(raw || "")
+      .replace(/^\ufeff/, "")
+      .replace(/\u200b|\u200c|\u200d|\ufeff/g, "");
+    try {
+      s = s.replace(/\p{Zs}/gu, " ");
+    } catch {
+      s = s.replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, " ");
+    }
+    return s.trim();
+  }
+
+  /**
+   * True when the column name suggests an identifier column (Patient_ID, Patient Id, patientId, …).
+   * Collapses all non-alphanumeric runs to a single underscore so odd Unicode spaces still form …_id.
+   */
+  function columnNameLooksLikeIdColumn(name) {
+    const s = normalizeHeaderForIdHeuristic(name);
+    if (!s) return false;
+    const norm = s.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    if (/_ids?$/i.test(norm)) return true;
+    if (/\b(id|ids|identifier|uuid)\b/i.test(s)) return true;
+    if (/[a-z]Id$/.test(s)) return true;
+    if (s.includes("ID")) return true;
+    return false;
+  }
+
+  /** e.g. "Patient ID" after Unicode space normalization. */
+  function columnNameLooksPatientRelatedId(name) {
+    const s = normalizeHeaderForIdHeuristic(name);
+    if (!s) return false;
+    const low = s.toLowerCase();
+    return /\bpatient\b/.test(low) && /\bid\b/i.test(s);
+  }
+
+  /**
+   * Protect control + star: ID-like name, or Patient…+…ID, or first column by index (matches metadata card order).
+   * Pass fileColumnIndex from colStats.map / headers index when known so it stays in sync with the grid.
+   */
+  function protectIdentifiersButtonEligible(colName, fileColumnIndex) {
+    if (!colName || !state.headers.length) return false;
+    const ix =
+      typeof fileColumnIndex === "number" && fileColumnIndex >= 0 ? fileColumnIndex : state.headers.indexOf(colName);
+    if (ix === 0) return true;
+    if (columnNameLooksLikeIdColumn(colName)) return true;
+    if (columnNameLooksPatientRelatedId(colName)) return true;
+    return state.headers[0] === colName;
+  }
+
+  function idColumnStarMarkup(colName, fileColumnIndex) {
+    if (!protectIdentifiersButtonEligible(colName, fileColumnIndex)) return "";
+    return `<span class="id-col-star" role="img" aria-label="Identifier column">★</span>`;
+  }
+
   function effectiveColumnKind(colStat, ed) {
     if (ed.treatAsType === "numeric") return "numeric";
     if (ed.treatAsType === "text") return "text";
@@ -1968,7 +2021,7 @@
   function enrichColumnsForMetadata(headers, rows, colStats) {
     const inc = getColumnIncludeMap();
     const synthProf = rows.length ? buildFullColumnSynthesisProfiles(headers, rows, colStats) : null;
-    return colStats.map((c) => {
+    return colStats.map((c, idx) => {
       const ed = getEditForCol(c.name);
       const label_for_synthesis =
         ed.displayLabel && String(ed.displayLabel).trim() ? String(ed.displayLabel).trim() : c.name;
@@ -1991,6 +2044,9 @@
         distinct_count: c.unique,
         synthesis_note_user: userNote || undefined,
         how_used_for_synthesis: userNote || defaultHow,
+        ...(ed.protectIdentifiers && protectIdentifiersButtonEligible(c.name, idx)
+          ? { protect_identifiers_in_synthetic_output: true }
+          : {}),
       };
 
       const aiCoachForCol = acceptedAiGuidanceForColumn(c.name);
@@ -2725,6 +2781,27 @@
     return String(v);
   }
 
+  /** Random synthetic identifier for protect-identifiers columns (numeric: uniform int in observed range when available). */
+  function sampleProtectIdentifierValue(meta, st, rng, rowIdx, colName) {
+    if (meta && meta.effective_synthesis_dtype === "numeric") {
+      const ref = meta.numeric_summary;
+      if (ref && Number.isFinite(ref.min) && Number.isFinite(ref.max) && ref.max >= ref.min) {
+        const lo = Math.ceil(Number(ref.min));
+        const hi = Math.floor(Number(ref.max));
+        if (Number.isFinite(lo) && Number.isFinite(hi) && hi >= lo) {
+          if (hi === lo) return formatSynthCellValue(lo);
+          return formatSynthCellValue(lo + Math.floor(rng() * (hi - lo + 1)));
+        }
+      }
+      const x = sampleNumericFromColumnMeta(meta, st, rng);
+      return formatSynthCellValue(x);
+    }
+    const p1 = (rng() * 0x100000000) >>> 0;
+    const p2 = (rng() * 0x100000000) >>> 0;
+    const salt = hashStringToUint32(`${colName}\0${rowIdx}`);
+    return `SYN-${(p1 ^ salt).toString(16).padStart(8, "0")}-${p2.toString(16).padStart(8, "0")}`;
+  }
+
   function generateSyntheticRowsFromMetadata(nRows, goalText) {
     const colStats = inferColumnStats(state.headers, state.rows);
     const pkg = buildSyntheticMetadataPayload(state.headers, state.rows, colStats);
@@ -2761,7 +2838,14 @@
           row[h] = "";
           continue;
         }
+        const edCol = getEditForCol(h);
+        const protectIds =
+          !!(edCol && edCol.protectIdentifiers) && protectIdentifiersButtonEligible(h, state.headers.indexOf(h));
         if (meta.effective_synthesis_dtype === "numeric") {
+          if (protectIds) {
+            row[h] = sampleProtectIdentifierValue(meta, st, rng, r, h);
+            continue;
+          }
           const q = corrQByCol.get(h);
           const x =
             q != null && Number.isFinite(q)
@@ -2769,7 +2853,7 @@
               : sampleNumericFromColumnMeta(meta, st, rng);
           row[h] = formatSynthCellValue(x);
         } else {
-          row[h] = sampleTextFromColumnMeta(meta, rng);
+          row[h] = protectIds ? sampleProtectIdentifierValue(meta, st, rng, r, h) : sampleTextFromColumnMeta(meta, rng);
         }
       }
       out.push(row);
@@ -3978,6 +4062,27 @@
         if (a && b) openCorrelationEditModal(a, b);
         return;
       }
+      const prot = e.target.closest(".meta-protect-identifiers-btn");
+      if (prot) {
+        const col = prot.getAttribute("data-col");
+        if (!col || !state.headers.includes(col) || !protectIdentifiersButtonEligible(col, state.headers.indexOf(col)))
+          return;
+        if (!state.columnMetadataEdits) state.columnMetadataEdits = {};
+        const cur = getEditForCol(col);
+        const turningOn = !cur.protectIdentifiers;
+        const next = { ...cur };
+        if (cur.protectIdentifiers) delete next.protectIdentifiers;
+        else next.protectIdentifiers = true;
+        pruneEmptyColumnEdit(col, next);
+        saveSession();
+        renderMetadata();
+        toast(
+          turningOn
+            ? "This column will use random synthetic identifiers when you generate data."
+            : "Identifier protection off for this column."
+        );
+        return;
+      }
       const btn = e.target.closest(".meta-dash-edit-btn");
       if (!btn) return;
       const col = btn.getAttribute("data-col");
@@ -4252,6 +4357,13 @@
         to: sn.length > 280 ? `${sn.slice(0, 280)}…` : sn,
       });
     }
+    if (ed.protectIdentifiers && protectIdentifiersButtonEligible(colName, state.headers.indexOf(colName))) {
+      items.push({
+        field: "Protect identifiers",
+        from: "Off",
+        to: "On (random synthetic values in generated rows)",
+      });
+    }
     if (ed.synthDist && ed.synthDist !== "auto") {
       items.push({ field: "Synthetic distribution shape", from: "auto", to: String(ed.synthDist) });
     }
@@ -4316,6 +4428,9 @@
     if (field === "Schema inclusion") {
       return `"${col}" was removed from synthesis metadata.`;
     }
+    if (field === "Protect identifiers") {
+      return `Synthetic generation for "${col}" will emit random identifiers instead of sampling from observed values.`;
+    }
     return "";
   }
 
@@ -4327,6 +4442,8 @@
       if (dlab && dlab !== colName) parts.push(`Label → ${dlab.length > 24 ? `${dlab.slice(0, 22)}…` : dlab}`);
       if (ed.treatAsType === "numeric" || ed.treatAsType === "text") parts.push(`Type → ${ed.treatAsType}`);
       if (ed.synthesisNote && String(ed.synthesisNote).trim()) parts.push("Synthesis note");
+      if (ed.protectIdentifiers && protectIdentifiersButtonEligible(colName, state.headers.indexOf(colName)))
+        parts.push("Protect identifiers");
       if (columnEditHasSynthOverrides(ed)) parts.push("Synthetic targets");
     }
     const nc = countCorrelationOverridesForColumn(colName);
@@ -4596,6 +4713,7 @@
     if (!x.displayLabel) delete x.displayLabel;
     if (!x.treatAsType) delete x.treatAsType;
     if (!x.synthesisNote) delete x.synthesisNote;
+    if (!x.protectIdentifiers) delete x.protectIdentifiers;
     if (!x.synthDist || x.synthDist === "auto") delete x.synthDist;
     if (!String(x.synthMin || "").trim()) delete x.synthMin;
     if (!String(x.synthMax || "").trim()) delete x.synthMax;
@@ -5303,7 +5421,7 @@
     bindCorrelationEditModalOnce();
     bindSyntheticResetButtonsOnce();
     bindMetadataSectionDetailsToggleOnce();
-    if (!state.rows.length || !els.metadataHygieneList || !els.metadataDashboardStats || !els.metadataDashboardColumns || !els.metadataJson) {
+    if (!state.rows.length) {
       repositionSyntheticResetButtons();
       if (els.btnRevertDistributions) els.btnRevertDistributions.classList.add("hidden");
       const distDet = $("meta-section-distributions");
@@ -5316,6 +5434,12 @@
       return;
     }
 
+    if (!els.metadataDashboardColumns) {
+      repositionSyntheticResetButtons();
+      updateMetadataSectionModifiedHighlights();
+      return;
+    }
+
     const colStats = inferColumnStats(state.headers, state.rows);
     const enriched = enrichColumnsForMetadata(state.headers, state.rows, colStats);
     const pkg = buildSyntheticMetadataPayload(state.headers, state.rows, colStats);
@@ -5324,7 +5448,8 @@
     const highSev = (state.issues || []).filter((i) => i.sev === "high").length;
     const includedN = state.headers.filter((h) => inc[h] !== false).length;
 
-    els.metadataDashboardStats.innerHTML = `
+    if (els.metadataDashboardStats) {
+      els.metadataDashboardStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${state.rows.length.toLocaleString()}</div><div class="stat-label">Rows in file</div></div>
       <div class="stat-card"><div class="stat-value">${state.headers.length}</div><div class="stat-label">Columns detected</div></div>
       <div class="stat-card"><div class="stat-value">${includedN}</div><div class="stat-label">Included in synthetic schema</div></div>
@@ -5332,9 +5457,10 @@
       <div class="stat-card"><div class="stat-value">${nulls.toLocaleString()}</div><div class="stat-label">Empty cells</div></div>
       <div class="stat-card"><div class="stat-value">${highSev}</div><div class="stat-label">High-severity hygiene flags</div></div>
     `;
+    }
 
     els.metadataDashboardColumns.innerHTML = enriched
-      .map((c) => {
+      .map((c, idx) => {
         const summary =
           c.numeric_summary != null
             ? `Range ${c.numeric_summary.min} → ${c.numeric_summary.max} · average ${c.numeric_summary.mean}`
@@ -5352,16 +5478,22 @@
           : `Type profile: <strong>${escapeHtml(c.computed_profile_dtype)}</strong>`;
         const st = getColStatOrFallback(c.name, colStats);
         const ed = getEditForCol(c.name);
+        const showProtectBtn = protectIdentifiersButtonEligible(c.name, idx);
         const changeHint = briefColumnChangeSummary(c.name, st, ed, inc[c.name] !== false);
         const modClass = changeHint ? " meta-dash-card--modified" : "";
         const hintBlock = changeHint
           ? `<p class="meta-dash-change-hint" role="status"><span class="meta-dash-change-indicator" aria-hidden="true"></span><span class="meta-dash-change-hint-text">${escapeHtml(changeHint)}</span></p>`
           : "";
+        const protectBtn = showProtectBtn
+          ? `<button type="button" class="btn btn-secondary btn-sm meta-protect-identifiers-btn${
+              ed.protectIdentifiers ? " meta-protect-identifiers-btn--active" : ""
+            }" data-col="${escapeAttr(c.name)}" aria-pressed="${ed.protectIdentifiers ? "true" : "false"}">Protect Identifiers</button>`
+          : "";
         return `<article class="meta-dash-card${modClass}">
           <div class="meta-dash-card-head">
             <div>
               <h4 class="meta-dash-card-title">${escapeHtml(c.label_for_synthesis)}</h4>
-              <p class="meta-dash-card-sub">${escapeHtml(c.name)}</p>
+              <p class="meta-dash-card-sub"><span class="meta-dash-tech-name">${idColumnStarMarkup(c.name, idx)}${escapeHtml(c.name)}</span></p>
             </div>
             <label class="meta-dash-include"><input type="checkbox" class="meta-include-cb" data-col="${escapeAttr(c.name)}" ${checked} /> Include</label>
           </div>
@@ -5375,7 +5507,10 @@
           ${synthLine}
           ${hintBlock}
           <p class="meta-dash-role">${escapeHtml(String(c.how_used_for_synthesis || "").slice(0, 220))}${(c.how_used_for_synthesis || "").length > 220 ? "…" : ""}</p>
-          <button type="button" class="btn btn-secondary meta-dash-edit-btn" data-col="${escapeAttr(c.name)}">Edit metadata</button>
+          <div class="meta-dash-card-actions">
+            <button type="button" class="btn btn-secondary meta-dash-edit-btn" data-col="${escapeAttr(c.name)}">Edit metadata</button>
+            ${protectBtn}
+          </div>
         </article>`;
       })
       .join("");
@@ -5383,20 +5518,22 @@
     const nameToEnriched = new Map(enriched.map((c) => [c.name, c]));
     renderMetadataCorrelation(els.metadataCorrelation, pkg.numeric_correlation_pearson, nameToEnriched);
 
-    els.metadataHygieneList.innerHTML = (state.issues && state.issues.length
-      ? state.issues
-      : [{ sev: "low", title: "No issues cached", detail: "Return to inspection to refresh the hygiene pass." }]
-    )
-      .slice(0, 12)
-      .map(
-        (i) => `<li class="issue-item">
+    if (els.metadataHygieneList) {
+      els.metadataHygieneList.innerHTML = (state.issues && state.issues.length
+        ? state.issues
+        : [{ sev: "low", title: "No issues cached", detail: "Return to inspection to refresh the hygiene pass." }]
+      )
+        .slice(0, 12)
+        .map(
+          (i) => `<li class="issue-item">
         <span class="issue-severity ${sevClass(i.sev)}">${escapeHtml(i.sev)}</span>
         <div class="issue-body"><strong>${escapeHtml(i.title)}</strong><span>${escapeHtml(i.detail)}</span></div>
       </li>`
-      )
-      .join("");
+        )
+        .join("");
+    }
 
-    els.metadataJson.textContent = JSON.stringify(pkg, null, 2);
+    if (els.metadataJson) els.metadataJson.textContent = JSON.stringify(pkg, null, 2);
     const distNumericInteractive = getMetadataDistributionNumericColumns(colStats, 3);
     renderChartsInto(colStats, els.metadataChartsRow, state.metaCharts, "mchart", {
       skipCategorical: true,
@@ -6090,8 +6227,8 @@
       <tbody>
         ${colStats
           .map(
-            (c) => `<tr>
-          <td><span class="badge">${escapeHtml(c.name)}</span></td>
+            (c, idx) => `<tr>
+          <td class="column-name-cell">${idColumnStarMarkup(c.name, idx)}<span class="badge">${escapeHtml(c.name)}</span></td>
           <td>${c.inferred}</td>
           <td>${c.nonNull}</td>
           <td>${c.missing}</td>
@@ -6124,7 +6261,6 @@
       "Your agent is reviewing column profiles, deterministic checks, and a small row sample. This usually takes a few seconds.";
     els.issueList.innerHTML = `<li class="issue-item"><span class="issue-severity low">…</span><div class="issue-body"><strong>In progress</strong><span>Running model assessment.</span></div></li>`;
     if (els.btnRetryAi) els.btnRetryAi.classList.add("hidden");
-    if (els.agentPrivacyNote) els.agentPrivacyNote.classList.add("hidden");
     if (els.agentBanner) els.agentBanner.classList.add("is-loading");
 
     const payload = {
@@ -6160,7 +6296,6 @@
       state.issues = attachHygieneIssueIds(fromApi.length ? fromApi : ruleIssues);
       pruneInspectionHygieneAcceptedToIssues(state.issues);
       renderIssueList();
-      if (els.agentPrivacyNote) els.agentPrivacyNote.classList.remove("hidden");
       if (els.btnRetryAi) els.btnRetryAi.classList.add("hidden");
     } catch (err) {
       console.error(err);

@@ -548,13 +548,6 @@ main {
   color: var(--text-muted);
 }
 
-.agent-privacy-note {
-  margin: 0.5rem 0 0 !important;
-  font-size: 0.75rem !important;
-  color: var(--text-muted) !important;
-  max-width: 62ch;
-}
-
 #btn-retry-ai {
   margin-top: 0.75rem;
   font-size: 0.8125rem;
@@ -805,9 +798,27 @@ main {
   line-height: 1.45;
 }
 
+.meta-dash-card-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.25rem;
+  align-self: flex-start;
+}
+
+.meta-dash-card-actions .btn {
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
 .meta-dash-edit-btn {
   align-self: flex-start;
-  margin-top: 0.25rem;
+}
+
+.meta-protect-identifiers-btn--active {
+  border-color: rgba(14, 165, 233, 0.55);
+  background: rgba(224, 242, 254, 0.65);
 }
 
 .metadata-correlation {
@@ -1846,6 +1857,34 @@ main {
   border-radius: 999px;
   background: var(--blue-100);
   color: var(--blue-700);
+}
+
+.column-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+}
+
+.id-col-star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 1rem;
+  min-height: 1rem;
+  font-size: 0.85rem;
+  line-height: 1;
+  color: var(--blue-600, #2563eb);
+  text-shadow: 0 0 1px rgba(255, 255, 255, 0.6);
+}
+
+.meta-dash-tech-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  word-break: break-word;
 }
 
 @media (max-width: 768px) {
