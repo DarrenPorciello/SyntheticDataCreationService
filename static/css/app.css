@@ -768,6 +768,10 @@ main {
   font-size: 0.75rem;
 }
 
+.meta-dash-dl--name-privacy {
+  grid-template-columns: 1fr 1fr;
+}
+
 .meta-dash-dl > div {
   min-width: 0;
 }
@@ -1877,6 +1881,17 @@ main {
   line-height: 1;
   color: var(--blue-600, #2563eb);
   text-shadow: 0 0 1px rgba(255, 255, 255, 0.6);
+}
+
+.name-col-person {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 1rem;
+  min-height: 1rem;
+  font-size: 0.82rem;
+  line-height: 1;
 }
 
 .meta-dash-tech-name {

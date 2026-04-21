@@ -421,10 +421,7 @@
     const excludedColumns = state.headers.filter((h) => inc[h] === false);
     const colEdits = state.columnMetadataEdits && typeof state.columnMetadataEdits === "object" ? state.columnMetadataEdits : {};
     const columnsWithEdits = Object.keys(colEdits);
-    const protectIdentifierColumns = columnsWithEdits.filter((h) => {
-      const ed = colEdits[h];
-      return !!(ed && ed.protectIdentifiers);
-    });
+    const protectIdentifierColumns = state.headers.filter((h) => identifierProtectionEnabled(h));
     const numericShapeOverrides = columnsWithEdits
       .map((h) => ({ col: h, shape: colEdits[h] && colEdits[h].synthDist ? String(colEdits[h].synthDist) : "auto" }))
       .filter((x) => x.shape && x.shape !== "auto")
@@ -1439,6 +1436,13 @@
     return false;
   }
 
+  /** Any header containing "name" (case-insensitive) is treated as personal-name field. */
+  function columnNameLooksLikePersonalNameField(name) {
+    const s = normalizeHeaderForIdHeuristic(name);
+    if (!s) return false;
+    return /name/i.test(s);
+  }
+
   /** e.g. "Patient ID" after Unicode space normalization. */
   function columnNameLooksPatientRelatedId(name) {
     const s = normalizeHeaderForIdHeuristic(name);
@@ -1447,23 +1451,41 @@
     return /\bpatient\b/.test(low) && /\bid\b/i.test(s);
   }
 
+  function autoProtectIdentifiersColumn(colName) {
+    return (
+      columnNameLooksLikePersonalNameField(colName) ||
+      columnNameLooksLikeIdColumn(colName) ||
+      columnNameLooksPatientRelatedId(colName)
+    );
+  }
+
+  function identifierProtectionEnabled(colName) {
+    const ed = getEditForCol(colName);
+    if (ed && ed.protectIdentifiers === false) return false;
+    if (ed && ed.protectIdentifiers === true) return true;
+    return autoProtectIdentifiersColumn(colName);
+  }
+
   /**
    * Protect control + star: ID-like name, or Patient…+…ID, or first column by index (matches metadata card order).
    * Pass fileColumnIndex from colStats.map / headers index when known so it stays in sync with the grid.
    */
   function protectIdentifiersButtonEligible(colName, fileColumnIndex) {
     if (!colName || !state.headers.length) return false;
-    const ix =
-      typeof fileColumnIndex === "number" && fileColumnIndex >= 0 ? fileColumnIndex : state.headers.indexOf(colName);
-    if (ix === 0) return true;
-    if (columnNameLooksLikeIdColumn(colName)) return true;
-    if (columnNameLooksPatientRelatedId(colName)) return true;
-    return state.headers[0] === colName;
+    return autoProtectIdentifiersColumn(colName);
   }
 
   function idColumnStarMarkup(colName, fileColumnIndex) {
+    if (columnNameLooksLikePersonalNameField(colName)) {
+      return `<span class="name-col-person" role="img" aria-label="Personal name field">👤</span>`;
+    }
     if (!protectIdentifiersButtonEligible(colName, fileColumnIndex)) return "";
     return `<span class="id-col-star" role="img" aria-label="Identifier column">★</span>`;
+  }
+
+  /** Name fields are excluded from visual comparisons/charts. */
+  function includeColumnInVisualComparisons(colName) {
+    return !columnNameLooksLikePersonalNameField(colName);
   }
 
   function effectiveColumnKind(colStat, ed) {
@@ -2049,8 +2071,7 @@
     for (const h of state.headers) {
       const meta = metaByName.get(h);
       if (!meta || meta.effective_synthesis_dtype !== "numeric") continue;
-      const edCol = getEditForCol(h);
-      if (edCol && edCol.protectIdentifiers) continue;
+      if (identifierProtectionEnabled(h)) continue;
       const t = meta.synthetic_numeric_targets;
       if (!t || !t.moments) continue;
 
@@ -2380,7 +2401,7 @@
         distinct_count: c.unique,
         synthesis_note_user: userNote || undefined,
         how_used_for_synthesis: userNote || defaultHow,
-        ...(ed.protectIdentifiers && protectIdentifiersButtonEligible(c.name, idx)
+        ...(identifierProtectionEnabled(c.name)
           ? { protect_identifiers_in_synthetic_output: true }
           : {}),
       };
@@ -2632,6 +2653,7 @@
     const names = [];
     for (const h of headers) {
       if (inc[h] === false) continue;
+      if (!includeColumnInVisualComparisons(h)) continue;
       const st = colStats.find((x) => x.name === h);
       if (!st || effectiveColumnKind(st, getEditForCol(h)) !== "numeric") continue;
       names.push(h);
@@ -2642,6 +2664,7 @@
 
   function buildNumericCorrelationBlock(headers, rows, colStats) {
     const numericNames = headers.filter((h) => {
+      if (!includeColumnInVisualComparisons(h)) return false;
       const c = colStats.find((s) => s.name === h);
       return c && c.inferred === "numeric";
     });
@@ -3208,8 +3231,7 @@
           continue;
         }
         const edCol = getEditForCol(h);
-        const protectIds =
-          !!(edCol && edCol.protectIdentifiers) && protectIdentifiersButtonEligible(h, state.headers.indexOf(h));
+        const protectIds = identifierProtectionEnabled(h);
         if (meta.effective_synthesis_dtype === "numeric") {
           if (protectIds) {
             row[h] = sampleProtectIdentifierValue(meta, st, rng, r, h);
@@ -3293,7 +3315,7 @@
    */
   function computeSyntheticFidelityReport() {
     const inc = getColumnIncludeMap();
-    const cols = state.headers.filter((h) => inc[h] !== false);
+    const cols = state.headers.filter((h) => inc[h] !== false && includeColumnInVisualComparisons(h));
     const colStatsOrig = inferColumnStats(state.headers, state.rows);
     const numMetrics = [];
     const catCols = [];
@@ -3463,6 +3485,7 @@
     const rowsHtml = [];
     for (const h of state.headers) {
       if (inc[h] === false) continue;
+      if (!includeColumnInVisualComparisons(h)) continue;
       const st = colStatsOrig.find((x) => x.name === h);
       const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
       if (kind !== "numeric") continue;
@@ -3508,7 +3531,7 @@
 
   function buildReviewSyntheticCheckPayload(frep) {
     const inc = getColumnIncludeMap();
-    const hdrs = state.headers.filter((h) => inc[h] !== false).slice(0, 40);
+    const hdrs = state.headers.filter((h) => inc[h] !== false && includeColumnInVisualComparisons(h)).slice(0, 40);
     const numeric_deltas = (frep.numMetrics || []).slice(0, 24).map((m) => ({
       column: m.col,
       orig_mean: m.o.mean,
@@ -3553,8 +3576,8 @@
       numeric_deltas,
       correlation_deltas,
       categorical_deltas: catRows,
-      sample_orig_rows: buildSampleRowsForApi(state.rows, state.headers, 10),
-      sample_synth_rows: buildSampleRowsForApi(state.syntheticRows, state.headers, 10),
+      sample_orig_rows: buildSampleRowsForApi(state.rows, hdrs, 10),
+      sample_synth_rows: buildSampleRowsForApi(state.syntheticRows, hdrs, 10),
     };
   }
 
@@ -3587,7 +3610,7 @@
 
   function buildReviewCompareHtml() {
     const inc = getColumnIncludeMap();
-    const cols = state.headers.filter((h) => inc[h] !== false);
+    const cols = state.headers.filter((h) => inc[h] !== false && includeColumnInVisualComparisons(h));
     if (!state.syntheticRows.length) {
       return `<p class="panel-lead meta-changes-lead-tight">Comparison tables appear after you generate synthetic data.</p>`;
     }
@@ -3653,7 +3676,7 @@
       return `<p class="panel-lead">No synthetic dataset in this session. Go back to <strong>Review</strong>, then <strong>Synthetic data</strong>, to generate a set.</p>`;
     }
     const inc = getColumnIncludeMap();
-    const colNames = state.headers.filter((h) => inc[h] !== false);
+    const colNames = state.headers.filter((h) => inc[h] !== false && includeColumnInVisualComparisons(h));
     const n = synth.length;
     const nCols = colNames.length;
     let missing = 0;
@@ -4263,6 +4286,7 @@
     const blocks = [];
     state.headers.forEach((h) => {
       if (inc[h] === false) return;
+      if (!includeColumnInVisualComparisons(h)) return;
       const st = colStats.find((x) => x.name === h);
       const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
       if (kind === "numeric") {
@@ -4440,10 +4464,10 @@
           return;
         if (!state.columnMetadataEdits) state.columnMetadataEdits = {};
         const cur = getEditForCol(col);
-        const turningOn = !cur.protectIdentifiers;
+        const currentlyOn = identifierProtectionEnabled(col);
+        const turningOn = !currentlyOn;
         const next = { ...cur };
-        if (cur.protectIdentifiers) delete next.protectIdentifiers;
-        else next.protectIdentifiers = true;
+        next.protectIdentifiers = turningOn ? true : false;
         pruneEmptyColumnEdit(col, next);
         saveSession();
         renderMetadata();
@@ -4728,7 +4752,7 @@
         to: sn.length > 280 ? `${sn.slice(0, 280)}…` : sn,
       });
     }
-    if (ed.protectIdentifiers && protectIdentifiersButtonEligible(colName, state.headers.indexOf(colName))) {
+    if (identifierProtectionEnabled(colName) && protectIdentifiersButtonEligible(colName, state.headers.indexOf(colName))) {
       items.push({
         field: "Protect identifiers",
         from: "Off",
@@ -4813,7 +4837,7 @@
       if (dlab && dlab !== colName) parts.push(`Label → ${dlab.length > 24 ? `${dlab.slice(0, 22)}…` : dlab}`);
       if (ed.treatAsType === "numeric" || ed.treatAsType === "text") parts.push(`Type → ${ed.treatAsType}`);
       if (ed.synthesisNote && String(ed.synthesisNote).trim()) parts.push("Synthesis note");
-      if (ed.protectIdentifiers && protectIdentifiersButtonEligible(colName, state.headers.indexOf(colName)))
+      if (identifierProtectionEnabled(colName) && protectIdentifiersButtonEligible(colName, state.headers.indexOf(colName)))
         parts.push("Protect identifiers");
       if (columnEditHasSynthOverrides(ed)) parts.push("Synthetic targets");
     }
@@ -5084,7 +5108,7 @@
     if (!x.displayLabel) delete x.displayLabel;
     if (!x.treatAsType) delete x.treatAsType;
     if (!x.synthesisNote) delete x.synthesisNote;
-    if (!x.protectIdentifiers) delete x.protectIdentifiers;
+    if (x.protectIdentifiers !== false && !x.protectIdentifiers) delete x.protectIdentifiers;
     if (!x.synthDist || x.synthDist === "auto") delete x.synthDist;
     if (!String(x.synthMin || "").trim()) delete x.synthMin;
     if (!String(x.synthMax || "").trim()) delete x.synthMax;
@@ -5565,14 +5589,18 @@
 
   function getMetadataDistributionNumericColumns(colStats, limit) {
     const filtered = colStats.filter(
-      (c) => effectiveColumnKind(c, getEditForCol(c.name)) === "numeric" && c.numericSample && c.numericSample.length > 2
+      (c) =>
+        includeColumnInVisualComparisons(c.name) &&
+        effectiveColumnKind(c, getEditForCol(c.name)) === "numeric" &&
+        c.numericSample &&
+        c.numericSample.length > 2
     );
     return orderColStatsForDistributions(filtered).slice(0, limit);
   }
 
   function getMetadataDistributionTextColumns(colStats, limit) {
     return colStats
-      .filter((c) => effectiveColumnKind(c, getEditForCol(c.name)) === "text" && c.nonNull > 0)
+      .filter((c) => includeColumnInVisualComparisons(c.name) && effectiveColumnKind(c, getEditForCol(c.name)) === "text" && c.nonNull > 0)
       .slice(0, limit);
   }
 
@@ -5823,7 +5851,9 @@
     els.metadataDashboardColumns.innerHTML = enriched
       .map((c, idx) => {
         const summary =
-          c.numeric_summary != null
+          columnNameLooksLikePersonalNameField(c.name)
+            ? "Name values are hidden from profiling details for privacy."
+            : c.numeric_summary != null
             ? `Range ${c.numeric_summary.min} → ${c.numeric_summary.max} · average ${c.numeric_summary.mean}`
             : (c.categorical_summary?.top_categories || [])
                 .slice(0, 2)
@@ -5845,11 +5875,22 @@
         const hintBlock = changeHint
           ? `<p class="meta-dash-change-hint" role="status"><span class="meta-dash-change-indicator" aria-hidden="true"></span><span class="meta-dash-change-hint-text">${escapeHtml(changeHint)}</span></p>`
           : "";
+        const protectionOn = identifierProtectionEnabled(c.name);
         const protectBtn = showProtectBtn
           ? `<button type="button" class="btn btn-secondary btn-sm meta-protect-identifiers-btn${
-              ed.protectIdentifiers ? " meta-protect-identifiers-btn--active" : ""
-            }" data-col="${escapeAttr(c.name)}" aria-pressed="${ed.protectIdentifiers ? "true" : "false"}">Protect Identifiers</button>`
+              protectionOn ? " meta-protect-identifiers-btn--active" : ""
+            }" data-col="${escapeAttr(c.name)}" aria-pressed="${protectionOn ? "true" : "false"}">Protect Identifiers</button>`
           : "";
+        const statsDl = columnNameLooksLikePersonalNameField(c.name)
+          ? `<dl class="meta-dash-dl meta-dash-dl--name-privacy">
+            <div><dt>Non-null</dt><dd>${c.non_null_count.toLocaleString()}</dd></div>
+            <div><dt>Missing</dt><dd>${c.missing_count.toLocaleString()}</dd></div>
+          </dl>`
+          : `<dl class="meta-dash-dl">
+            <div><dt>Non-null</dt><dd>${c.non_null_count.toLocaleString()}</dd></div>
+            <div><dt>Missing</dt><dd>${c.missing_count.toLocaleString()}</dd></div>
+            <div><dt>Distinct values</dt><dd>${c.distinct_count.toLocaleString()}</dd></div>
+          </dl>`;
         return `<article class="meta-dash-card${modClass}">
           <div class="meta-dash-card-head">
             <div>
@@ -5859,11 +5900,7 @@
             <label class="meta-dash-include"><input type="checkbox" class="meta-include-cb" data-col="${escapeAttr(c.name)}" ${checked} /> Include</label>
           </div>
           <p class="meta-dash-dtype">${dtypeLine}</p>
-          <dl class="meta-dash-dl">
-            <div><dt>Non-null</dt><dd>${c.non_null_count.toLocaleString()}</dd></div>
-            <div><dt>Missing</dt><dd>${c.missing_count.toLocaleString()}</dd></div>
-            <div><dt>Distinct values</dt><dd>${c.distinct_count.toLocaleString()}</dd></div>
-          </dl>
+          ${statsDl}
           <p class="meta-dash-summary">${escapeHtml(summary)}</p>
           ${synthLine}
           ${hintBlock}
@@ -6707,6 +6744,7 @@
     let numericCols = [];
     if (!skipNumeric) {
       const filtered = colStats.filter((c) => {
+        if (!includeColumnInVisualComparisons(c.name)) return false;
         if (!c.numericSample || c.numericSample.length <= 2) return false;
         const isNum = useEffectiveNumeric
           ? effectiveColumnKind(c, getEditForCol(c.name)) === "numeric"
@@ -6719,7 +6757,7 @@
     }
     const catCols = skipCategorical
       ? []
-      : colStats.filter((c) => c.inferred === "text" && c.nonNull > 0).slice(0, 2);
+      : colStats.filter((c) => includeColumnInVisualComparisons(c.name) && c.inferred === "text" && c.nonNull > 0).slice(0, 2);
 
     numericCols.forEach((c) => {
       const id = `${idPrefix}-num-${safeId(c.name)}`;
