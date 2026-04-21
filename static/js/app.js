@@ -2040,6 +2040,65 @@
     }
   }
 
+  /**
+   * Final tightening pass: make generated numeric columns adhere closely to per-column
+   * target moments from metadata (mean, optionally variance), while respecting ranges.
+   */
+  function tightenNumericColumnsToMomentTargets(rows, metaByName) {
+    if (!rows || !rows.length || !metaByName) return;
+    for (const h of state.headers) {
+      const meta = metaByName.get(h);
+      if (!meta || meta.effective_synthesis_dtype !== "numeric") continue;
+      const edCol = getEditForCol(h);
+      if (edCol && edCol.protectIdentifiers) continue;
+      const t = meta.synthetic_numeric_targets;
+      if (!t || !t.moments) continue;
+
+      const targetMean = parseOptionalNumber(t.moments.mean);
+      const targetVar = parseOptionalNumber(t.moments.variance);
+      const targetStd = targetVar != null && Number.isFinite(targetVar) && targetVar >= 0 ? Math.sqrt(targetVar) : null;
+      if (targetMean == null && targetStd == null) continue;
+
+      const idx = [];
+      const vals = [];
+      for (let r = 0; r < rows.length; r++) {
+        const raw = rows[r][h];
+        const x = Number(String(raw == null ? "" : raw).replace(/,/g, ""));
+        if (!Number.isFinite(x)) continue;
+        idx.push(r);
+        vals.push(x);
+      }
+      if (!vals.length) continue;
+
+      const curMean = vals.reduce((a, b) => a + b, 0) / vals.length;
+      let curStd = 0;
+      if (vals.length > 1) {
+        let ss = 0;
+        for (let i = 0; i < vals.length; i++) {
+          const d = vals[i] - curMean;
+          ss += d * d;
+        }
+        curStd = Math.sqrt(Math.max(0, ss / (vals.length - 1)));
+      }
+
+      const mn = parseOptionalNumber(t.range && t.range.min);
+      const mx = parseOptionalNumber(t.range && t.range.max);
+      for (let i = 0; i < vals.length; i++) {
+        let x = vals[i];
+        if (targetMean != null && targetStd != null && curStd > 1e-12) {
+          x = targetMean + ((x - curMean) / curStd) * targetStd;
+        } else if (targetMean != null) {
+          x = x + (targetMean - curMean);
+        } else if (targetStd != null && curStd > 1e-12) {
+          x = curMean + ((x - curMean) / curStd) * targetStd;
+        }
+        if (mn != null && Number.isFinite(mn)) x = Math.max(mn, x);
+        if (mx != null && Number.isFinite(mx)) x = Math.min(mx, x);
+        rows[idx[i]][h] = formatSynthCellValue(x);
+      }
+    }
+  }
+
   function sampleNumericFromColumnMetaAtQuantile(meta, st, rng, qIn) {
     const q = Math.max(1e-9, Math.min(1 - 1e-9, Number(qIn)));
     const ref = meta.numeric_summary;
@@ -3058,6 +3117,39 @@
     return String(v);
   }
 
+  /**
+   * Enforce per-column numeric moment targets (mean/variance) on a sampled value.
+   * This makes metadata mean edits visibly carry through to synthetic output.
+   */
+  function applyNumericMomentOverrideToSample(xIn, meta) {
+    let x = Number(xIn);
+    if (!Number.isFinite(x) || !meta || typeof meta !== "object") return xIn;
+    const ref = meta.numeric_summary;
+    const t = meta.synthetic_numeric_targets;
+    if (!ref || !t || !t.moments) return x;
+
+    const hasRefMean = Number.isFinite(ref.mean);
+    const hasRefStd = Number.isFinite(ref.std) && Number(ref.std) > 1e-12;
+    const targetMean = parseOptionalNumber(t.moments.mean);
+    const targetVar = parseOptionalNumber(t.moments.variance);
+    const targetStd = targetVar != null && Number.isFinite(targetVar) && targetVar >= 0 ? Math.sqrt(targetVar) : null;
+
+    if (targetMean == null && targetStd == null) return x;
+    if (hasRefMean && hasRefStd && targetStd != null) {
+      x = targetMean != null ? targetMean + ((x - ref.mean) / ref.std) * targetStd : ref.mean + ((x - ref.mean) / ref.std) * targetStd;
+    } else if (targetMean != null && hasRefMean) {
+      x = x + (targetMean - ref.mean);
+    } else if (targetMean != null) {
+      x = targetMean;
+    }
+
+    const mn = parseOptionalNumber(t.range && t.range.min);
+    const mx = parseOptionalNumber(t.range && t.range.max);
+    if (mn != null && Number.isFinite(mn)) x = Math.max(mn, x);
+    if (mx != null && Number.isFinite(mx)) x = Math.min(mx, x);
+    return x;
+  }
+
   /** Random synthetic identifier for protect-identifiers columns (numeric: uniform int in observed range when available). */
   function sampleProtectIdentifierValue(meta, st, rng, rowIdx, colName) {
     if (meta && meta.effective_synthesis_dtype === "numeric") {
@@ -3128,7 +3220,7 @@
             q != null && Number.isFinite(q)
               ? sampleNumericFromColumnMetaAtQuantile(meta, st, rng, q)
               : sampleNumericFromColumnMeta(meta, st, rng);
-          row[h] = formatSynthCellValue(x);
+          row[h] = formatSynthCellValue(applyNumericMomentOverrideToSample(x, meta));
         } else {
           row[h] = protectIds ? sampleProtectIdentifierValue(meta, st, rng, r, h) : sampleTextFromColumnMeta(meta, rng);
         }
@@ -3136,6 +3228,7 @@
       out.push(row);
     }
     calibrateGeneratedNumericCorrelations(out, corrCtx, metaByName, colStats);
+    tightenNumericColumnsToMomentTargets(out, metaByName);
     return out;
   }
 
@@ -6803,9 +6896,18 @@
       data: rows.map((r) => state.headers.map((h) => r[h] ?? "")),
     });
     state.inspectionHygieneAccepted = [];
+    // Recompute local deterministic findings after row-level edits, without re-running the AI API pass.
+    const colStats = inferColumnStats(state.headers, state.rows);
+    state.issues = attachHygieneIssueIds(buildIssues(state.headers, state.rows, colStats).slice(0, 4));
     saveSession();
     toast("Fixes applied. Dataset updated for this session.");
-    renderInspect();
+    renderInspectStatic(colStats);
+    renderIssueList();
+    if (els.btnRetryAi) els.btnRetryAi.classList.remove("hidden");
+    if (els.agentSummary) {
+      els.agentSummary.textContent =
+        "Fixes were applied. Hygiene findings were refreshed from local rules only; AI assessment was not re-run.";
+    }
   }
 
   function bindEvents() {
