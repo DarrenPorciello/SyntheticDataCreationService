@@ -142,6 +142,11 @@ MAX_SAMPLE_ROWS = 25
 MAX_CELL_LEN = 160
 MAX_COLUMNS = 80
 
+# Shown when the metadata coach returns no items (must not read like a class-imbalance lecture).
+METADATA_COACH_NO_ISSUES_SUMMARY = (
+    "No issues were identified with your metadata on this pass. You can continue toward synthetic generation or adjust any column in the editor if you want to refine further."
+)
+
 
 class ColumnStatIn(BaseModel):
     name: str
@@ -571,7 +576,9 @@ You receive (as JSON): file_name, row_count, column_stats (name, inferred type, 
 Respond with ONLY valid JSON (no markdown, no code fences):
 {"summary": string, "suggestions": array}
 
-**summary** — One or two short sentences. If no suggestion: say **no meaningful class imbalance** (or similar). If one suggestion: describe the severe skew briefly—still calm wording (this is informational, not alarmist).
+**summary** — One or two short sentences.
+- If **suggestions** is **[]**: say clearly that **no issues were identified with the user’s metadata** on this pass (plain language; do **not** discuss class balance, category counts, or “sufficient representation”).
+- If there is **one** suggestion: briefly describe that severe skew only—calm, informational tone.
 
 **suggestions** — **Either [] or exactly one object.** Never more than one.
 
@@ -614,9 +621,14 @@ Rules:
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=502, detail=f"Model returned invalid JSON: {e}") from e
 
-    summary = str(data.get("summary", "")).strip() or "No class imbalance stood out in the provided profile; you can proceed or refine metadata manually."
+    summary = str(data.get("summary", "")).strip()
     suggestions = _normalize_metadata_suggestions(data.get("suggestions", []))[:1]
     suggestions = [s.model_copy(update={"importance": "low"}) for s in suggestions]
+
+    if not suggestions:
+        summary = METADATA_COACH_NO_ISSUES_SUMMARY
+    elif not summary:
+        summary = "One metadata note is listed below; review it if it applies to your use case."
 
     return MetadataSuggestResponse(summary=summary[:1200], suggestions=suggestions)
 

@@ -1507,6 +1507,11 @@
       .replace(/^\ufeff/, "")
       .replace(/\u200b|\u200c|\u200d|\ufeff/g, "");
     try {
+      if (typeof s.normalize === "function") s = s.normalize("NFKC");
+    } catch {
+      /* ignore */
+    }
+    try {
       s = s.replace(/\p{Zs}/gu, " ");
     } catch {
       s = s.replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, " ");
@@ -1514,8 +1519,15 @@
     return s.trim();
   }
 
+  /** Lowercase letters+digits only — for robust token tests (Patient ID vs patientid). */
+  function headerAlphanumericKey(name) {
+    return normalizeHeaderForIdHeuristic(name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  }
+
   /**
-   * True when the column name suggests an identifier column (Patient_ID, Patient Id, patientId, …).
+   * True when the column name suggests an identifier column (Patient_ID, Patient Id, patientId, PID, MRN, …).
    * Collapses all non-alphanumeric runs to a single underscore so odd Unicode spaces still form …_id.
    */
   function columnNameLooksLikeIdColumn(name) {
@@ -1526,6 +1538,11 @@
     if (/\b(id|ids|identifier|uuid)\b/i.test(s)) return true;
     if (/[a-z]Id$/.test(s)) return true;
     if (s.includes("ID")) return true;
+    if (/\b(pid|mrn|ihi|uin|npi|ssn|dob)\b/i.test(s)) return true;
+    const key = headerAlphanumericKey(name);
+    if (/^(pid|mrn|ihi|uin|npi|ssn|uuid|rowid|rowkey)$/.test(key)) return true;
+    if (key === "patientid" || key.startsWith("patientid")) return true;
+    if (/^(patid|ptid|patientmrn)$/.test(key)) return true;
     return false;
   }
 
@@ -1536,12 +1553,18 @@
     return /name/i.test(s);
   }
 
-  /** e.g. "Patient ID" after Unicode space normalization. */
+  /** Patient / encounter / subject style record identifiers (not only the literal substring " id "). */
   function columnNameLooksPatientRelatedId(name) {
     const s = normalizeHeaderForIdHeuristic(name);
     if (!s) return false;
     const low = s.toLowerCase();
-    return /\bpatient\b/.test(low) && /\bid\b/i.test(s);
+    if (/\bpatient\b/.test(low) && /\b(id|identifier|number|no|nbr|key|#|mrn)\b/i.test(s)) return true;
+    if (/\bpatient[\s._-]*id\b/i.test(s) || /\bpatient[\s._-]*#\b/i.test(s)) return true;
+    const key = headerAlphanumericKey(name);
+    if (/^patient(id|mrn|number|no|key|identifier|nbr)/i.test(key)) return true;
+    if (/^(subject|participant|member|study|encounter|visit)(id|number|no|key|mrn)$/.test(key)) return true;
+    if (/^(medicalrecord|recordnumber|chartnumber|clinicalid)$/.test(key)) return true;
+    return false;
   }
 
   function autoProtectIdentifiersColumn(colName) {
@@ -1576,9 +1599,37 @@
     return `<span class="id-col-star" role="img" aria-label="Identifier column">★</span>`;
   }
 
-  /** Name fields are excluded from visual comparisons/charts. */
+  /**
+   * Columns that must never appear in original vs synthetic distribution charts (Review tab) or inspection
+   * visualizations: same rules as in-product identifier handling, plus aggressive patient/record-id patterns.
+   */
+  function columnExcludedFromOrigSynthDistributionCharts(colName) {
+    const ed = getEditForCol(colName);
+    if (ed && ed.protectIdentifiers === true) return true;
+    if (autoProtectIdentifiersColumn(colName)) return true;
+    const s = normalizeHeaderForIdHeuristic(colName);
+    if (!s) return false;
+    const low = s.toLowerCase();
+    const k = headerAlphanumericKey(colName);
+    if (/patient/.test(low)) {
+      if (/\b(id|ids|identifier|no\.?|number|nbr|mrn|uid|key|\#)\b/i.test(s)) return true;
+      if (/patient[\s._-]{0,16}(id|ids|identifier|mrn|number|no|key|\#)/i.test(s)) return true;
+      if (/^patient(id|ids|number|no|key|mrn|identifier|nbr)/i.test(k) || k.startsWith("patientid")) return true;
+    }
+    if (/^(primary|secondary|master|source|target|internal|external|global|local)?(patient|member|subject|participant|client|person)?(id|uid|key|number|no|mrn)$/i.test(
+      k
+    ))
+      return true;
+    if (/^(row|record|line|case|seq|sequence|index)(id|key|no|num|number)$/i.test(k)) return true;
+    if (/^(emp|employee|staff|user|account|acct)(id|number|no|key)$/i.test(k)) return true;
+    const snakeish = s.replace(/\s+/g, "_");
+    if (/_ids?$/i.test(snakeish)) return true;
+    return false;
+  }
+
+  /** Personal-name, identifier, patient/record IDs — excluded from Review distributions & comparisons and inspection charts. */
   function includeColumnInVisualComparisons(colName) {
-    return !columnNameLooksLikePersonalNameField(colName);
+    return !columnExcludedFromOrigSynthDistributionCharts(colName);
   }
 
   function effectiveColumnKind(colStat, ed) {
@@ -3266,25 +3317,13 @@
     return x;
   }
 
-  /** Random synthetic identifier for protect-identifiers columns (numeric: uniform int in observed range when available). */
-  function sampleProtectIdentifierValue(meta, st, rng, rowIdx, colName) {
-    if (meta && meta.effective_synthesis_dtype === "numeric") {
-      const ref = meta.numeric_summary;
-      if (ref && Number.isFinite(ref.min) && Number.isFinite(ref.max) && ref.max >= ref.min) {
-        const lo = Math.ceil(Number(ref.min));
-        const hi = Math.floor(Number(ref.max));
-        if (Number.isFinite(lo) && Number.isFinite(hi) && hi >= lo) {
-          if (hi === lo) return formatSynthCellValue(lo);
-          return formatSynthCellValue(lo + Math.floor(rng() * (hi - lo + 1)));
-        }
-      }
-      const x = sampleNumericFromColumnMeta(meta, st, rng);
-      return formatSynthCellValue(x);
-    }
-    const p1 = (rng() * 0x100000000) >>> 0;
-    const p2 = (rng() * 0x100000000) >>> 0;
-    const salt = hashStringToUint32(`${colName}\0${rowIdx}`);
-    return `SYN-${(p1 ^ salt).toString(16).padStart(8, "0")}-${p2.toString(16).padStart(8, "0")}`;
+  /**
+   * Random 4-digit integer (1000–9999) for protected identifier columns.
+   * Does not mirror source ID ranges or formats so synthetic IDs stay unlinkable.
+   */
+  function sampleProtectIdentifierValue(_meta, _st, rng, _rowIdx, _colName) {
+    const v = 1000 + Math.floor(rng() * 9000);
+    return formatSynthCellValue(v);
   }
 
   function generateSyntheticRowsFromMetadata(nRows, goalText) {
@@ -3683,12 +3722,14 @@
     if (!n) {
       return `<p class="panel-lead">No synthetic dataset yet. Go back one step to <strong>Synthetic data</strong>, enter a goal and row count, then click <strong>Generate</strong>.</p>`;
     }
+    const inc = getColumnIncludeMap();
+    const visibleHeaders = state.headers.filter((h) => inc[h] !== false && includeColumnInVisualComparisons(h));
     const preview = state.syntheticRows.slice(0, 12);
-    const th = state.headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("");
+    const th = visibleHeaders.map((h) => `<th>${escapeHtml(h)}</th>`).join("");
     const tr = preview
       .map(
         (r) =>
-          `<tr>${state.headers.map((h) => `<td>${escapeHtml(String(r[h] ?? "")).slice(0, 80)}</td>`).join("")}</tr>`
+          `<tr>${visibleHeaders.map((h) => `<td>${escapeHtml(String(r[h] ?? "")).slice(0, 80)}</td>`).join("")}</tr>`
       )
       .join("");
     return `<div class="review-dash-stats">
@@ -4392,7 +4433,7 @@
     const blocks = [];
     state.headers.forEach((h) => {
       if (inc[h] === false) return;
-      if (!includeColumnInVisualComparisons(h)) return;
+      if (columnExcludedFromOrigSynthDistributionCharts(h)) return;
       const st = colStats.find((x) => x.name === h);
       const kind = st ? effectiveColumnKind(st, getEditForCol(h)) : "text";
       if (kind === "numeric") {
@@ -6091,6 +6132,7 @@
       skipNumeric: false,
       metadataNumericOverflowCharts: true,
       metadataInteractiveNumericCols: distNumericInteractive,
+      allowIdentifierDistributionCharts: true,
     });
     renderMetadataDistributionEditor(colStats, distNumericInteractive);
     repositionSyntheticResetButtons();
@@ -6876,6 +6918,11 @@
   function renderChartsInto(colStats, containerEl, chartList, idPrefix, opts) {
     if (!containerEl) return;
     const options = opts && typeof opts === "object" ? opts : {};
+    const allowIdentifierCharts = options.allowIdentifierDistributionCharts === true;
+    const passesChartColFilter = (colName) => {
+      if (allowIdentifierCharts) return !columnNameLooksLikePersonalNameField(colName);
+      return includeColumnInVisualComparisons(colName);
+    };
     const skipCategorical = options.skipCategorical === true;
     const skipNumeric = options.skipNumeric === true;
     const metaOverflow = options.metadataNumericOverflowCharts === true;
@@ -6897,7 +6944,7 @@
     let numericCols = [];
     if (!skipNumeric) {
       const filtered = colStats.filter((c) => {
-        if (!includeColumnInVisualComparisons(c.name)) return false;
+        if (!passesChartColFilter(c.name)) return false;
         if (!c.numericSample || c.numericSample.length <= 2) return false;
         const isNum = useEffectiveNumeric
           ? effectiveColumnKind(c, getEditForCol(c.name)) === "numeric"
@@ -6910,7 +6957,7 @@
     }
     const catCols = skipCategorical
       ? []
-      : colStats.filter((c) => includeColumnInVisualComparisons(c.name) && c.inferred === "text" && c.nonNull > 0).slice(0, 2);
+      : colStats.filter((c) => passesChartColFilter(c.name) && c.inferred === "text" && c.nonNull > 0).slice(0, 2);
 
     numericCols.forEach((c) => {
       const id = `${idPrefix}-num-${safeId(c.name)}`;
