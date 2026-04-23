@@ -113,6 +113,8 @@
   let currentAppScreen = "home";
   let lastSessionSaveToastAt = 0;
   let synthetixHelpHistory = [];
+  let educationHelpHistory = [];
+  let educationHelpIntroShown = false;
 
   function archiveStorageKey(archiveId) {
     return ARCHIVE_STORAGE_PREFIX + archiveId;
@@ -243,6 +245,7 @@
     els.syntheticGenBusy = $("synthetic-gen-busy");
     els.syntheticGenBusyText = $("synthetic-gen-busy-text");
     els.btnDownloadSynthetic = $("btn-download-synthetic");
+    els.btnDownloadSyntheticFinalize = $("btn-download-synthetic-finalize");
     els.btnDownloadOriginalCsv = $("btn-download-original-csv");
     els.syntheticGenStatus = $("synthetic-gen-status");
     els.viewReview = $("view-review");
@@ -354,6 +357,13 @@
     els.synthetixHelpChatSend = $("synthetix-help-chat-send");
     els.synthetixHelpChatForm = $("synthetix-help-chat-form");
     els.synthetixHelpChatClose = $("synthetix-help-chat-close");
+    els.educationWorkflowLoader = $("education-workflow-loader");
+    els.educationHelpChat = $("education-help-chat");
+    els.educationHelpChatMessages = $("education-help-chat-messages");
+    els.educationHelpChatInput = $("education-help-chat-input");
+    els.educationHelpChatSend = $("education-help-chat-send");
+    els.educationHelpChatForm = $("education-help-chat-form");
+    els.educationHelpChatClose = $("education-help-chat-close");
   }
 
   /** Fixed corner mark: double 360° + scale “learning” pulse when workflow step changes on Create. */
@@ -413,6 +423,34 @@
       ensureSynthetixHelpIntro();
       if (els.synthetixHelpChatInput) els.synthetixHelpChatInput.focus();
     }
+  }
+
+  function ensureEducationHelpIntro() {
+    if (!els.educationHelpChatMessages) return;
+    if (els.educationHelpChatMessages.children.length) return;
+    appendEducationHelpMessage(
+      "assistant",
+      "Hi — I am the Synthetic Data Education Bot. Ask me anything about synthetic data concepts, privacy, fidelity, and practical use."
+    );
+  }
+
+  function toggleEducationHelpChat(forceOpen) {
+    if (!els.educationHelpChat) return;
+    const open = typeof forceOpen === "boolean" ? forceOpen : els.educationHelpChat.classList.contains("hidden");
+    els.educationHelpChat.classList.toggle("hidden", !open);
+    if (open) {
+      ensureEducationHelpIntro();
+      if (els.educationHelpChatInput) els.educationHelpChatInput.focus();
+    }
+  }
+
+  function appendEducationHelpMessage(role, text) {
+    if (!els.educationHelpChatMessages) return;
+    const p = document.createElement("p");
+    p.className = `synthetix-help-msg synthetix-help-msg--${role === "user" ? "user" : "assistant"}`;
+    p.textContent = String(text || "");
+    els.educationHelpChatMessages.appendChild(p);
+    els.educationHelpChatMessages.scrollTop = els.educationHelpChatMessages.scrollHeight;
   }
 
   function buildSynthetixHelpContext() {
@@ -482,6 +520,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          mode: "workflow",
           message,
           history: synthetixHelpHistory,
           context: buildSynthetixHelpContext(),
@@ -507,6 +546,54 @@
       toast(err && err.message ? err.message : "Help chat request failed.");
     } finally {
       els.synthetixHelpChatSend.disabled = false;
+    }
+  }
+
+  async function sendEducationHelpMessage() {
+    if (!els.educationHelpChatInput || !els.educationHelpChatSend) return;
+    const message = String(els.educationHelpChatInput.value || "").trim();
+    if (!message) return;
+    els.educationHelpChatInput.value = "";
+    appendEducationHelpMessage("user", message);
+    educationHelpHistory.push({ role: "user", content: message });
+    educationHelpHistory = educationHelpHistory.slice(-12);
+    els.educationHelpChatSend.disabled = true;
+    if (els.educationWorkflowLoader) els.educationWorkflowLoader.classList.add("education-workflow-loader--thinking");
+    appendEducationHelpMessage("assistant", "Thinking...");
+    try {
+      const res = await fetch(`${apiBase()}/api/synthetix-help-chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "education",
+          message,
+          history: educationHelpHistory,
+          context: {
+            screen: currentAppScreen,
+            topic: "synthetic_data_education",
+          },
+        }),
+      });
+      const raw = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof raw.detail === "string" ? raw.detail : res.statusText);
+      const answer = String(raw.answer || "").trim() || "I could not generate a reply right now.";
+      if (els.educationHelpChatMessages && els.educationHelpChatMessages.lastElementChild) {
+        const n = els.educationHelpChatMessages.lastElementChild;
+        if (n && n.textContent === "Thinking...") n.remove();
+      }
+      appendEducationHelpMessage("assistant", answer);
+      educationHelpHistory.push({ role: "assistant", content: answer });
+      educationHelpHistory = educationHelpHistory.slice(-12);
+    } catch (err) {
+      if (els.educationHelpChatMessages && els.educationHelpChatMessages.lastElementChild) {
+        const n = els.educationHelpChatMessages.lastElementChild;
+        if (n && n.textContent === "Thinking...") n.remove();
+      }
+      appendEducationHelpMessage("assistant", "I could not reach the education bot right now. Please try again.");
+      toast(err && err.message ? err.message : "Education chat request failed.");
+    } finally {
+      els.educationHelpChatSend.disabled = false;
+      if (els.educationWorkflowLoader) els.educationWorkflowLoader.classList.remove("education-workflow-loader--thinking");
     }
   }
 
@@ -997,9 +1084,15 @@
     if (els.screenCreate) els.screenCreate.classList.toggle("hidden", screen !== "create");
     if (els.screenLibrary) els.screenLibrary.classList.toggle("hidden", screen !== "library");
     if (els.screenEducation) els.screenEducation.classList.toggle("hidden", screen !== "education");
+    if (els.educationWorkflowLoader) els.educationWorkflowLoader.classList.toggle("hidden", screen !== "education");
+    if (screen !== "education") toggleEducationHelpChat(false);
     if (els.appHeaderWorkflow) els.appHeaderWorkflow.classList.toggle("hidden", screen !== "create");
     setSiteNavActive(screen);
     if (screen === "library") renderSessionLibraryList();
+    if (screen === "education" && !educationHelpIntroShown) {
+      educationHelpIntroShown = true;
+      toggleEducationHelpChat(true);
+    }
     renderSessionTitle();
   }
 
@@ -3291,6 +3384,7 @@
       els.syntheticOriginalLead.innerHTML = `The <strong>original uploaded CSV</strong> is stored in this session (~${bytes.toLocaleString()} characters) for comparison. Generation uses your <strong>metadata package</strong> (full-column marginals by default, plus any overrides you set), including numeric correlation targets from the metadata correlation matrix.`;
     }
     if (els.btnDownloadSynthetic) els.btnDownloadSynthetic.classList.toggle("hidden", !state.syntheticRows.length);
+    updateFinalizeSyntheticDownloadButton();
     if (els.syntheticGenStatus) {
       if (state.syntheticGeneratedAtUtc && state.syntheticRows.length) {
         els.syntheticGenStatus.textContent = `Last run: ${state.syntheticRows.length.toLocaleString()} rows at ${new Date(
@@ -3780,9 +3874,21 @@
     els.analyzeDashboardRoot.innerHTML = buildAnalyzeDashboardHtml();
   }
 
+  /** Finalize: keep control visible under Print. Do not use disabled — disabled buttons do not receive clicks. */
+  function updateFinalizeSyntheticDownloadButton() {
+    if (!els.btnDownloadSyntheticFinalize) return;
+    const has = Array.isArray(state.syntheticRows) && state.syntheticRows.length > 0;
+    els.btnDownloadSyntheticFinalize.classList.remove("hidden");
+    els.btnDownloadSyntheticFinalize.removeAttribute("disabled");
+    els.btnDownloadSyntheticFinalize.title = has
+      ? "Download the synthetic dataset as CSV (same as on the Synthetic data step)."
+      : "Generate synthetic data on the Synthetic data step first, then return here. If rows were dropped due to browser storage limits, re-run generation before downloading.";
+  }
+
   function renderFinalizePage() {
     renderAnalyzePage();
     updateFinalizeSaveStatus();
+    updateFinalizeSyntheticDownloadButton();
   }
 
   function buildMetadataSectionNotesForReport() {
@@ -4307,31 +4413,78 @@
       return;
     }
     const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = state.fileName || "original_upload.csv";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    triggerBlobDownload(blob, state.fileName || "original_upload.csv");
     toast("Original upload download started.");
   }
 
   function downloadSyntheticCsv() {
-    if (!state.syntheticRows.length) {
+    if (!Array.isArray(state.syntheticRows) || !state.syntheticRows.length) {
       toast("Generate a synthetic dataset first.");
       return;
     }
     const Papa = window.Papa;
-    const text = Papa.unparse({
-      fields: state.headers,
-      data: state.syntheticRows.map((r) => state.headers.map((h) => r[h] ?? "")),
-    });
+    if (!Papa || typeof Papa.unparse !== "function") {
+      toast("CSV library failed to load. Refresh the page and try again.");
+      return;
+    }
+    let text;
+    try {
+      text = Papa.unparse({
+        fields: state.headers,
+        data: state.syntheticRows.map((r) => state.headers.map((h) => r[h] ?? "")),
+      });
+    } catch (err) {
+      console.error(err);
+      toast(err && err.message ? String(err.message) : "Could not build CSV for download.");
+      return;
+    }
     const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = (state.fileName || "dataset").replace(/\.csv$/i, "") + "_synthetic.csv";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    const name = (state.fileName || "dataset").replace(/\.csv$/i, "") + "_synthetic.csv";
+    triggerBlobDownload(blob, name);
     toast("Download started.");
+  }
+
+  /** Blob → file save. Delay revokeObjectURL (sync revoke can cancel the download). */
+  function triggerBlobDownload(blob, filename) {
+    const safeName = String(filename || "download.bin").replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_");
+    if (typeof navigator.msSaveOrOpenBlob === "function") {
+      try {
+        navigator.msSaveOrOpenBlob(blob, safeName);
+      } catch (e) {
+        console.error(e);
+        toast(e && e.message ? String(e.message) : "Download failed.");
+      }
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = safeName;
+    a.setAttribute("download", safeName);
+    a.rel = "noopener";
+    a.style.cssText = "position:fixed;left:-9999px;top:0;";
+    document.body.appendChild(a);
+    const clean = () => {
+      try {
+        if (a.parentNode) a.parentNode.removeChild(a);
+      } catch (_) {
+        /* ignore */
+      }
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {
+        /* ignore */
+      }
+    };
+    try {
+      a.click();
+    } catch (e) {
+      clean();
+      console.error(e);
+      toast(e && e.message ? String(e.message) : "Download failed.");
+      return;
+    }
+    window.setTimeout(clean, 4500);
   }
 
   let metadataViewEventsBound = false;
@@ -6965,6 +7118,21 @@
         void sendSynthetixHelpMessage();
       });
     }
+    if (els.educationWorkflowLoader) {
+      els.educationWorkflowLoader.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleEducationHelpChat();
+      });
+    }
+    if (els.educationHelpChatClose) {
+      els.educationHelpChatClose.addEventListener("click", () => toggleEducationHelpChat(false));
+    }
+    if (els.educationHelpChatForm) {
+      els.educationHelpChatForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        void sendEducationHelpMessage();
+      });
+    }
 
     els.dropzone.addEventListener("click", () => els.fileInput.click());
     els.dropzone.addEventListener("keydown", (e) => {
@@ -7332,6 +7500,16 @@
     }
     if (els.btnDownloadSynthetic) {
       els.btnDownloadSynthetic.addEventListener("click", () => downloadSyntheticCsv());
+    }
+    if (els.btnDownloadSyntheticFinalize) {
+      els.btnDownloadSyntheticFinalize.addEventListener(
+        "click",
+        (e) => {
+          e.preventDefault();
+          downloadSyntheticCsv();
+        },
+        true
+      );
     }
     if (els.btnDownloadOriginalCsv) {
       els.btnDownloadOriginalCsv.addEventListener("click", () => downloadOriginalCsvSnapshot());

@@ -1814,7 +1814,7 @@ main {
   border-radius: var(--radius-sm);
   font-size: 0.875rem;
   box-shadow: var(--shadow);
-  z-index: 100;
+  z-index: 10050;
   animation: slideIn 0.25s ease;
 }
 
@@ -3031,6 +3031,14 @@ body.printing-session-report #session-report-print-root[hidden] {
   opacity: 0.95;
 }
 
+.synthetic-gen-side-icon {
+  width: 2.4rem;
+  height: 2.4rem;
+  object-fit: contain;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
 .synthetic-gen-busy {
   display: inline-flex;
   align-items: center;
@@ -3981,6 +3989,13 @@ details.review-section > .review-section-summary::marker {
   align-items: center;
 }
 
+.finalize-report-print-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
 .finalize-save-hint {
   margin-top: 0.75rem;
   font-size: 0.8125rem;
@@ -4316,6 +4331,50 @@ details.review-section > .review-section-summary::marker {
   cursor: pointer;
 }
 
+.education-workflow-loader {
+  position: fixed;
+  left: 1.15rem;
+  bottom: 1.15rem;
+  z-index: 102;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.education-workflow-loader-ring {
+  width: 3.35rem;
+  height: 3.35rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: linear-gradient(160deg, #ffffff 0%, #f5f3ff 55%, #ede9fe 100%);
+  border: 1px solid rgba(124, 58, 237, 0.3);
+  box-shadow:
+    0 6px 22px rgba(15, 23, 42, 0.1),
+    0 0 0 1px rgba(255, 255, 255, 0.85) inset;
+}
+
+.education-workflow-loader-img {
+  width: 2.95rem;
+  height: 2.95rem;
+  object-fit: contain;
+  display: block;
+}
+
+.education-workflow-loader--thinking .education-workflow-loader-img {
+  animation: education-loader-thinking-spin 1.8s linear infinite;
+}
+
+@keyframes education-loader-thinking-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
 .synthetix-workflow-loader-ring {
   width: 3.35rem;
   height: 3.35rem;
@@ -4356,6 +4415,23 @@ details.review-section > .review-section-summary::marker {
 .synthetix-help-chat {
   position: fixed;
   right: 1.15rem;
+  bottom: 5rem;
+  width: min(24rem, calc(100vw - 1.5rem));
+  max-height: min(62vh, 34rem);
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 101;
+}
+
+.education-help-chat {
+  position: fixed;
+  left: 1.15rem;
   bottom: 5rem;
   width: min(24rem, calc(100vw - 1.5rem));
   max-height: min(62vh, 34rem);
@@ -4464,7 +4540,15 @@ details.review-section > .review-section-summary::marker {
     display: none !important;
   }
 
+  .education-workflow-loader {
+    display: none !important;
+  }
+
   .synthetix-help-chat {
+    display: none !important;
+  }
+
+  .education-help-chat {
     display: none !important;
   }
 }

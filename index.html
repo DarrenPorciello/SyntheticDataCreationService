@@ -539,6 +539,14 @@
                   <span>Generate synthetic dataset</span>
                 </span>
               </button>
+              <img
+                src="static/images/synthetic-generate-agent.png"
+                class="synthetic-gen-side-icon"
+                alt=""
+                width="38"
+                height="38"
+                decoding="async"
+              />
               <div id="synthetic-gen-busy" class="synthetic-gen-busy" hidden role="status" aria-live="polite">
                 <span class="synthetic-gen-spinner" aria-hidden="true"></span>
                 <span id="synthetic-gen-busy-text" class="synthetic-gen-busy-text"></span>
@@ -723,7 +731,10 @@
             </div>
           </details>
           <div class="finalize-report-actions no-print">
-            <button type="button" class="btn btn-secondary" id="btn-print-session-report">Print / Save as PDF…</button>
+            <div class="finalize-report-print-block">
+              <button type="button" class="btn btn-secondary" id="btn-print-session-report">Print / Save as PDF…</button>
+              <button type="button" class="btn btn-secondary" id="btn-download-synthetic-finalize">Download synthetic CSV</button>
+            </div>
             <button type="button" class="btn btn-primary" id="btn-save-session-library">Save session to library</button>
           </div>
           <p class="panel-lead finalize-save-hint no-print" id="finalize-save-status" aria-live="polite"></p>
@@ -739,7 +750,7 @@
           <h2 class="panel-title">Library</h2>
           <p class="panel-lead">
             Sessions you save from <strong>Finalize</strong> appear here. Open one to jump back into the workflow with the same
-            data and step. Use the <strong>three-dot menu</strong> on a row to delete a copy from this browser.
+            data and step.
           </p>
           <div class="library-toolbar no-print">
             <button type="button" class="btn btn-ghost library-clear-btn" id="btn-library-clear-all">Clear saved session data</button>
@@ -967,6 +978,37 @@
           autocomplete="off"
         />
         <button type="submit" class="btn btn-primary btn-sm" id="synthetix-help-chat-send">Send</button>
+      </form>
+    </section>
+
+    <div id="education-workflow-loader" class="education-workflow-loader hidden" title="Synthetic data education chat">
+      <div class="education-workflow-loader-ring">
+        <img
+          class="education-workflow-loader-img"
+          src="static/images/education-agent.png"
+          alt=""
+          width="44"
+          height="44"
+          decoding="async"
+        />
+      </div>
+    </div>
+
+    <section id="education-help-chat" class="education-help-chat hidden" aria-label="Synthetic data education chat">
+      <div class="synthetix-help-chat-head">
+        <strong>Synthetic Data Education Bot</strong>
+        <button type="button" class="btn btn-ghost btn-sm" id="education-help-chat-close">Close</button>
+      </div>
+      <div id="education-help-chat-messages" class="synthetix-help-chat-messages" aria-live="polite"></div>
+      <form id="education-help-chat-form" class="synthetix-help-chat-form">
+        <input
+          type="text"
+          id="education-help-chat-input"
+          class="modal-input synthetix-help-chat-input"
+          placeholder="Ask about synthetic data concepts..."
+          autocomplete="off"
+        />
+        <button type="submit" class="btn btn-primary btn-sm" id="education-help-chat-send">Send</button>
       </form>
     </section>
 

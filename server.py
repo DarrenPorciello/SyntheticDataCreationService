@@ -257,6 +257,7 @@ class SynthetixHelpTurnIn(BaseModel):
 
 
 class SynthetixHelpChatRequest(BaseModel):
+    mode: str = Field(default="workflow", pattern="^(workflow|education)$")
     message: str = Field(default="", max_length=4000)
     history: list[SynthetixHelpTurnIn] = Field(default_factory=list, max_length=16)
     context: dict[str, Any] | None = None
@@ -489,7 +490,7 @@ def _normalize_metadata_suggestions(raw: list) -> list[MetadataSuggestionItemOut
     out: list[MetadataSuggestionItemOut] = []
     if not isinstance(raw, list):
         return out
-    for item in raw[:3]:
+    for item in raw[:1]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title", "")).strip() or "Suggestion"
@@ -557,31 +558,34 @@ async def metadata_suggest(body: MetadataSuggestRequest):
 
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-    system = """You are the **AI Metadata Agent** for Synthetix. You speak directly to customers and analysts who are shaping metadata so the system can generate **high-quality synthetic data** that reflects their real dataset.
+    system = """You are the **AI Metadata Agent** for Synthetix. Your **only** job in this pass is to assess **categorical class imbalance** (skewed label / category frequencies) for synthetic data quality.
 
-You receive (as JSON): dataset shape, per-column profile stats, a small row sample, hygiene notes from an earlier quality pass, and **schema_context** (columns excluded from synthesis, user edits to labels/types/notes, synthetic distribution hints, and correlation targets).
+You receive (as JSON): file_name, row_count, column_stats (name, inferred type, nonNull, missing, unique), sample_rows, hygiene_issues, and schema_context.
+
+**How to decide (strict bar)**
+- Look at **text / categorical** columns (inferred not numeric, or clearly categorical in sample): use **unique**, **nonNull**, and **sample_rows**—do not invent counts.
+- **Default: return suggestions: []** (zero items). Mild or moderate skew is **not** enough for a suggestion.
+- Return **exactly one** suggestion **only** when there is a **big / severe** problem: e.g. at least one category is **extremely** rare compared to the dominant class in a way that would **materially** hurt synthetic fidelity or downstream evaluation (think order-of-magnitude rarity or single-digit counts vs thousands), evidenced from the payload.
+- If you are unsure whether it is “big”, prefer **suggestions: []**.
 
 Respond with ONLY valid JSON (no markdown, no code fences):
 {"summary": string, "suggestions": array}
 
-**summary** — One or two short sentences in plain, confident language: what stands out about their metadata and how ready it looks for synthetic generation. No jargon about systems or infrastructure.
+**summary** — One or two short sentences. If no suggestion: say **no meaningful class imbalance** (or similar). If one suggestion: describe the severe skew briefly—still calm wording (this is informational, not alarmist).
 
-**suggestions** — Between **0 and 3** objects. Return suggestions only when there is a clear metadata improvement to make. If metadata already looks appropriate, return an empty array.
+**suggestions** — **Either [] or exactly one object.** Never more than one.
 
-Each suggestion object:
-{"title": string, "detail": string, "importance": "high"|"medium"|"low", "related_columns": string[], "suggested_action": string}
+When you output the one object, set **importance** to **"low"** only (this coach pass is always low priority in the UI).
 
-- **title**: Benefit-focused, ≤8 words.
-- **detail**: 1–2 short sentences, friendly and specific.
-- **importance**: high, medium, or low priority for impact on synthetic quality.
-- **related_columns**: Up to 3 names; every name MUST appear in the provided headers/column_stats. Use [] if none.
-- **suggested_action**: One short imperative line the user can follow in the metadata UI (optional; use "" if redundant).
+Each suggestion object (only for a severe case):
+{"title": string, "detail": string, "importance": "low", "related_columns": string[], "suggested_action": string}
+
+- **related_columns**: Up to 3 names; every name MUST appear in the provided headers/column_stats.
+- **suggested_action**: Short imperative (e.g. Distributions, merge-rare, rebalance).
 
 Rules:
+- Do not output suggestions for numeric columns unless the issue is truly categorical encoding of numbers as labels.
 - Never invent column names.
-- Avoid repeating the same idea twice.
-- Do **not** re-suggest generic hygiene fixes already covered in inspection (e.g., dedupe, trim whitespace, drop empty rows) unless you convert them into a specific metadata change with clear synthetic-quality impact.
-- Keep every suggestion dataset-specific by citing concrete column context and why the metadata change will improve synthetic realism.
 - Do not mention APIs, keys, models, servers, or "OpenAI".
 - Write as the in-product agent."""
 
@@ -610,8 +614,9 @@ Rules:
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=502, detail=f"Model returned invalid JSON: {e}") from e
 
-    summary = str(data.get("summary", "")).strip() or "Here is a quick read on your metadata for synthetic data."
-    suggestions = _normalize_metadata_suggestions(data.get("suggestions", []))[:3]
+    summary = str(data.get("summary", "")).strip() or "No class imbalance stood out in the provided profile; you can proceed or refine metadata manually."
+    suggestions = _normalize_metadata_suggestions(data.get("suggestions", []))[:1]
+    suggestions = [s.model_copy(update={"importance": "low"}) for s in suggestions]
 
     return MetadataSuggestResponse(summary=summary[:1200], suggestions=suggestions)
 
@@ -723,7 +728,25 @@ async def synthetix_help_chat(body: SynthetixHelpChatRequest):
         raise HTTPException(status_code=400, detail="message is required.")
 
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    system = """You are Synthetix AI inside a synthetic data app.
+    if body.mode == "education":
+        system = """You are a Synthetic Data Education Bot.
+
+Your role:
+- Teach synthetic data concepts in clear, practical language.
+- Answer questions about privacy, utility, fidelity, correlation, distributions, sampling, and safe usage patterns.
+- Use short examples when helpful.
+- Be concise and practical. Prefer short paragraphs or bullets.
+
+Rules:
+- Do not mention APIs, keys, model names, or backend implementation details unless directly asked.
+- Give definite answers only. Do not use hedging language such as "likely", "probably", "maybe", "might", "could", "uncertain", or "assume".
+- If exact details are missing, still provide one direct explanation as fact (do not refuse and do not mention uncertainty).
+
+Respond with ONLY valid JSON:
+{"answer": string}
+"""
+    else:
+        system = """You are Synthetix AI inside a synthetic data app.
 
 Your role:
 - Help users understand the synthetic data process in plain language.
